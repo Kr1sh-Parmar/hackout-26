@@ -45,7 +45,7 @@ downloaded) UTC)      QC-flagged) model-ready)
 - **raw/** — untouched source files, fully reproducible via `scripts/dl_*.py`
 - **bronze/** — parsed, typed, timezone-normalized (UTC everywhere)
 - **silver/** — quality-flagged (`OK` / `MISSING` / `FROZEN` / `OUT_OF_RANGE` / `CURTAILED`), deduplicated
-- **gold/** — capacity-weighted regional aggregation across 5 grid points × 3 NWP models, joined with generation truth, demand, and TSO benchmark forecasts
+- **gold/** — capacity-weighted regional aggregation across the available grid points × 3 NWP models, joined with generation truth, demand, and TSO benchmark forecasts. Five points are fetched, but only four survive into the 24–72 h band (`namur` is published at lead 0–23 h only, and `liege` carries two of the three NWP models there); weights are renormalised over the points actually present
 
 ### 2.3 Training Dataset
 
@@ -53,7 +53,7 @@ downloaded) UTC)      QC-flagged) model-ready)
 
 | Property | Detail |
 |---|---|
-| Grid points | 5, capacity-weighted across the Belgian fleet |
+| Grid points | 5 fetched, 4 present across the whole 24–72 h band; capacity-weighted, renormalised over those present |
 | NWP models | 3 (ECMWF IFS, ICON, GFS) — blended, with model disagreement as a feature |
 | Lead-time bands | 24–47h, 48–71h, 72h — genuinely time-stratified, not day-of forecasts |
 | Target | Capacity factor residual (`y_cf − physics_cf`), never raw MW |
@@ -95,6 +95,37 @@ Weather → [Physics Model] → Physics-only forecast (pvlib solar geometry,
 | 7 | Spatio-temporal GNN | In training |
 
 The core modelling ladder (rungs 0–5) is fully implemented and serving live traffic.
+
+### 3.2.1 Rungs 6–7: the deep benchmark, and why it is not served
+
+The ladder's rule is that each rung must beat the rung below on a held-out window
+*or be skipped with a stated reason*. Rungs 6 and 7 were built and measured rather than
+assumed, on the **same 22 folds, same features, same conformal calibration and same scoring
+call** as the incumbent — the harness asserts that its in-process rung-5 refit reproduces
+`artifacts/backtest.json` exactly before any other number is written.
+
+| Rung | Solar nRMSE | Wind nRMSE | PICP (solar / wind) | Params |
+|---|---|---|---|---|
+| 5 — LightGBM residual (**served**) | **5.363 %** | **8.568 %** | 0.789 / 0.792 | — |
+| 6 — sequence stack | 5.555 % | 9.517 % | 0.797 / 0.798 | 382 k |
+| 7 — + spatial graph | 5.690 % | 9.272 % | 0.792 / 0.798 | 521 k |
+
+LightGBM wins by 0.192 pp on solar and 0.704 pp on wind — both far outside the ~0.05 pp
+seed spread across three seeds, so these are real losses, not noise. The deep rungs are
+well *calibrated* (PICP 0.79–0.80 for about 1 pp more width); they lose on **sharpness**,
+which is what ~450 k parameters over ~900 training runs should be expected to do.
+
+The **ablation is the informative part**: rung 7 with identity adjacency and its pooling
+frozen at the fixed capacity weights scores 5.675 % / 9.250 % — equal to or very slightly
+*better* than the real graph. The learned spatial aggregation buys nothing over the
+capacity weights it was initialised from. Rung 7's edge over rung 6 on wind comes from the
+extra node-level features, not from spatial structure. Both numbers are published.
+
+Nothing here is served: `registry.py`, `scripts/train.py` and `scripts/backtest.py` are
+untouched by this track, torch is an optional `[deep]` extra so the serving path never
+imports it, and no tuning was attempted before reporting. Full detail in
+`artifacts/deep_benchmark.json`; reproduce with `python scripts/train_deep.py --region BE
+--graph-ablate`.
 
 ### 3.3 Feature Engineering
 
@@ -171,7 +202,7 @@ Split-conformal calibration, tuned via measurement:
 | **Uncertainty** | `src/uncertainty/` | Split-conformal calibration, coverage reporting |
 | **Evaluation** | `src/evaluation/` | Metrics (nRMSE, skill score, PICP, pinball loss), walk-forward backtesting, baselines, drift monitoring |
 | **Decisions** | `src/decisions/` | Net-load calculation, event scanning, storage simulation, LP dispatch optimiser, action recommendation |
-| **API** | `src/api/` | FastAPI application, 8 REST endpoints, response schemas |
+| **API** | `src/api/` | FastAPI application, 9 REST endpoints, response schemas |
 
 ### 4.2 CLI Scripts
 
@@ -180,6 +211,7 @@ Split-conformal calibration, tuned via measurement:
 | `scripts/train.py` | Trains residual models with visible progress (tqdm + per-iteration validation loss), three-way chronological split, automatic promotion gating |
 | `scripts/tune.py` | Optuna hyperparameter search against walk-forward pinball loss |
 | `scripts/backtest.py` | Full 22-fold walk-forward evaluation against persistence, physics, and Elia benchmarks |
+| `scripts/train_deep.py` | Rung 6/7 benchmark — deep sequence + graph models against the served LightGBM rung, never promoted |
 | `scripts/run_cycle.py` | End-to-end forecast cycle — supports `--live` for real-time operation |
 | `scripts/fetch_forecast.py` | Fetches and caches live weather |
 | `scripts/snapshot_replay.py` | Freezes a forecast cycle for offline demonstration |
@@ -188,7 +220,7 @@ Split-conformal calibration, tuned via measurement:
 
 ## 5. API Surface
 
-FastAPI application exposing 8 endpoints, auto-documented via OpenAPI (`/docs`):
+FastAPI application exposing 9 endpoints, auto-documented via OpenAPI (`/docs`):
 
 | Endpoint | Returns |
 |---|---|
@@ -200,6 +232,7 @@ FastAPI application exposing 8 endpoints, auto-documented via OpenAPI (`/docs`):
 | `GET /actions` | Ranked, sized, priced grid-action recommendations |
 | `GET /storage/sweep` | Curtailment-avoided vs. battery-capacity sizing curve |
 | `GET /backtest` | Historical accuracy metrics, per lead hour |
+| `GET /explain` | Ranked SHAP drivers of the forecast correction, per hour |
 
 Every response carries **provenance** (`model_version`, `calibration_date`, `replay_mode`) so any served number is traceable back to the model and data that produced it.
 
@@ -255,14 +288,14 @@ Every action carries a size, a value, and a stated confidence — the platform's
 
 ## 8. Reproducibility & Testing
 
-- **154 automated tests** covering physics correctness, feature-parity between training and serving, leakage guards, API contracts, and calibration behaviour
+- **160 automated tests** covering physics correctness, feature-parity between training and serving, leakage guards, API contracts, and calibration behaviour
 - **Zero data leakage by construction**: no random train/test splits anywhere in the codebase; every split is chronological with an explicit gap
 - **Deterministic aggregation**: the same regional weather-aggregation function is called by both the historical training pipeline and the live serving path, verified identical to floating-point precision
-- **Replay mode**: a full forecast cycle can be snapshotted and replayed with zero network access, for reliable offline demonstration
+- **Replay mode**: a full forecast cycle can be snapshotted and replayed with zero network access, for reliable offline demonstration — every operational endpoint reads through the same switch, verified against an empty data root so the frozen copy is genuinely what gets served
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests/ -q          # 154 tests
+python -m pytest tests/ -q          # 160 tests
 python scripts/backtest.py --region BE
 python scripts/run_cycle.py --region BE --live
 uvicorn src.api.main:app --reload   # API at localhost:8000/docs

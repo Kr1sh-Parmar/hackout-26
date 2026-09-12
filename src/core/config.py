@@ -20,8 +20,15 @@ class Settings(BaseSettings):
     data_root: pathlib.Path = pathlib.Path("./data")
     artifact_root: pathlib.Path = pathlib.Path("./artifacts")
     replay_mode: bool = False
-    redis_url: str = "redis://localhost:6379/0"
     log_level: str = "INFO"
+    # A forecast older than this is refused rather than served as if current.
+    # Generous by default: a stale number the caller can see the age of beats a
+    # 503 during a demo. Replay mode bypasses it entirely -- frozen data is the
+    # point there, not a fault.
+    stale_after_minutes: int = 1440
+    # Softer bar: /health warns here rather than erroring, so ingest lag is
+    # visible long before it becomes a refusal.
+    stale_warn_after_minutes: int = 180
 
 
 class Archetype(BaseModel):

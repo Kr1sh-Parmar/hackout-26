@@ -32,6 +32,7 @@ from src.ingest.adapters.elia import (  # noqa: E402
 )
 from src.ingest.adapters.openmeteo import WeatherUnavailable  # noqa: E402
 from src.ingest.live import live_weather_with_points, run_timestamp  # noqa: E402
+from src.models.explain import explain_run  # noqa: E402
 from src.models.predict import predict  # noqa: E402
 
 GOLD = pathlib.Path("data/gold")
@@ -62,10 +63,15 @@ def write(
 
 
 def latest_run(region: str) -> pd.Timestamp:
-    g = pd.read_parquet(
-        "data/gold/training_base_24_72h/part-0.parquet", columns=["region_id", "run_ts_utc"]
-    )
-    return pd.Timestamp(g[g.region_id == region].run_ts_utc.max())
+    path = pathlib.Path("data/gold/training_base_24_72h/part-0.parquet")
+    if not path.exists():
+        raise SystemExit(f"no training matrix at {path}; run scripts/build_gold.py first")
+    g = pd.read_parquet(path, columns=["region_id", "run_ts_utc"])
+    runs = g.loc[g.region_id == region, "run_ts_utc"]
+    if runs.empty:
+        known = sorted(g.region_id.unique())
+        raise SystemExit(f"no runs for region {region!r} in the training matrix; have: {known}")
+    return pd.Timestamp(runs.max())
 
 
 def load_demand(region: str, horizon: pd.DatetimeIndex | None = None) -> pd.DataFrame:
@@ -154,6 +160,11 @@ def main() -> None:
         "model_version": str(fc["model_version"].iloc[0]) if len(fc) else "unknown",
         "calibration_date": str(fc["calibration_date"].iloc[0]) if len(fc) else "unknown",
     }
+
+    # Attribution is computed HERE, not in the API. A request that has to run
+    # SHAP is the same design failure as one that has to run the model, and
+    # precomputing is also what lets /explain work under REPLAY_MODE offline.
+    write(explain_run(region, run_ts, weather=wx), "explain", region, run_ts, prov)
 
     horizon = pd.DatetimeIndex(sorted(fc["valid_ts_utc"].unique())) if len(fc) else None
     demand = load_demand(region, horizon if args.live else None)

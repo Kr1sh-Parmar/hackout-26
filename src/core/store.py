@@ -107,6 +107,24 @@ class ParquetStore:
     ) -> pd.DataFrame:
         return self._read_run("actions", region_id, run_ts)
 
+    def read_explain(
+        self,
+        region_id: str,
+        run_ts: dt.datetime | pd.Timestamp | None = None,
+        tech: str | None = None,
+        valid_ts: dt.datetime | pd.Timestamp | None = None,
+    ) -> pd.DataFrame:
+        extra_sql = ""
+        params: list = []
+        if tech is not None:
+            extra_sql += " AND tech = ?"
+            params.append(tech)
+        if valid_ts is not None:
+            extra_sql += " AND valid_ts_utc = ?"
+            params.append(pd.Timestamp(valid_ts))
+        extra_sql += " ORDER BY valid_ts_utc, tech, rank"
+        return self._read_run("explain", region_id, run_ts, extra_sql, params)
+
     def read_backtest(
         self,
         region_id: str,

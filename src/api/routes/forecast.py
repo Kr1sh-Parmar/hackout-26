@@ -5,9 +5,10 @@ import datetime as dt
 from fastapi import APIRouter, Depends, Query
 
 from ...core.store import ParquetStore
+from ...ingest.replay import read_table
 from ..deps import get_store
 from ..schemas import ForecastResponse, Tech
-from ._common import as_utc, provenance_fields, records, resolve_region
+from ._common import as_utc, provenance_fields, records, require_fresh_run, resolve_region
 
 router = APIRouter()
 
@@ -21,8 +22,15 @@ def get_forecast(
     store: ParquetStore = Depends(get_store),
 ) -> ForecastResponse:
     cfg = resolve_region(region_id)
-    df = store.read_forecast(
-        region_id, run_ts=as_utc(run_ts), horizon=horizon_hours, tech=tech.value if tech else None
+    run_ts = as_utc(run_ts)
+    require_fresh_run(region_id, store, run_ts)
+    df = read_table(
+        region_id,
+        "forecast",
+        store,
+        run_ts=run_ts,
+        horizon=horizon_hours,
+        tech=tech.value if tech else None,
     )
     data = records(
         df,

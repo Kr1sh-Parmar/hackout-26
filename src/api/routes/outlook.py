@@ -6,9 +6,10 @@ from fastapi import APIRouter, Depends, Query
 
 from ...core.store import ParquetStore
 from ...decisions.net_load import OUTLOOK_COLUMNS
+from ...ingest.replay import read_table
 from ..deps import get_store
 from ..schemas import OutlookResponse
-from ._common import as_utc, provenance_fields, records, resolve_region
+from ._common import as_utc, provenance_fields, records, require_fresh_run, resolve_region
 
 router = APIRouter()
 
@@ -23,6 +24,8 @@ def get_outlook(
     store: ParquetStore = Depends(get_store),
 ) -> OutlookResponse:
     cfg = resolve_region(region_id)
-    df = store.read_outlook(region_id, run_ts=as_utc(run_ts), horizon=horizon_hours)
+    run_ts = as_utc(run_ts)
+    require_fresh_run(region_id, store, run_ts)
+    df = read_table(region_id, "outlook", store, run_ts=run_ts, horizon=horizon_hours)
     data = records(df, _POINT_COLUMNS)
     return OutlookResponse(**provenance_fields(region_id, store, cfg, df), data=data)

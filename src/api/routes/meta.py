@@ -13,7 +13,6 @@ from ._common import list_region_ids
 
 router = APIRouter()
 
-_STALE_AFTER_MIN = 180
 _CALIBRATION_STALE_AFTER_DAYS = 30
 
 
@@ -43,7 +42,7 @@ def get_health(store: ParquetStore = Depends(get_store)) -> Health:
             warnings.append(f"{region_id}: no gold forecast data yet")
             continue
         lag_min = (now - latest).total_seconds() / 60
-        if lag_min > _STALE_AFTER_MIN:
+        if lag_min > settings.stale_warn_after_minutes:
             warnings.append(f"{region_id}: latest run is {lag_min:.0f} min old (ingest lag)")
 
         fc = store.read_forecast(region_id, horizon=1)

@@ -24,6 +24,61 @@ def _write_gold(gold_root, table: str, run_ts: pd.Timestamp) -> None:
     df.to_parquet(dest / "part-0.parquet", index=False)
 
 
+def _contract_row(table: str, run_ts: pd.Timestamp) -> dict:
+    """One row carrying every column the API's response model requires.
+
+    Built from the same column constants the producers export, so if a contract
+    grows a field this fixture follows it instead of quietly under-filling.
+    """
+    from src.decisions.events import EVENT_COLUMNS
+    from src.decisions.net_load import OUTLOOK_COLUMNS
+    from src.decisions.recommend import Action, Flag, RECOMMEND_COLUMNS
+    from src.models.explain import EXPLAIN_COLUMNS
+    from src.models.predict import PREDICT_COLUMNS
+
+    columns = {
+        "forecast": PREDICT_COLUMNS,
+        "outlook": OUTLOOK_COLUMNS,
+        "events": EVENT_COLUMNS,
+        "actions": RECOMMEND_COLUMNS,
+        "explain": EXPLAIN_COLUMNS,
+    }[table]
+
+    row: dict = {"region_id": REGION, "run_ts_utc": run_ts}
+    for col in columns:
+        if col in row:
+            continue
+        if col.endswith(("_ts_utc", "_from", "_to")):
+            row[col] = run_ts
+        elif col == "tech":
+            row[col] = "solar"
+        elif col == "flag":
+            row[col] = list(Flag)[0].value
+        elif col == "action":
+            row[col] = list(Action)[0].value
+        elif col == "rank":
+            row[col] = 0  # top driver; the /explain route filters on rank < top_n
+        elif col in ("lead_hours", "severity", "n_obs"):
+            row[col] = 24
+        elif col == "decisive":
+            row[col] = True
+        elif col in ("event_id", "linked_event_id", "feature"):
+            row[col] = "x"
+        elif col in ("description", "rationale", "model_version", "calibration_date"):
+            row[col] = "x"
+        elif col == "calibrated":
+            row[col] = True
+        else:
+            row[col] = 0.0
+    return row
+
+
+def _write_contract_gold(gold_root, table: str, run_ts: pd.Timestamp) -> None:
+    dest = gold_root / table / f"region_id={REGION}" / f"run_date={run_ts:%Y-%m-%d}"
+    dest.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([_contract_row(table, run_ts)]).to_parquet(dest / "part-0.parquet", index=False)
+
+
 class _NetworkTouchingStore:
     """Stands in for ParquetStore -- any call means replay mode failed to
     short-circuit before reaching the "live" path."""
@@ -86,6 +141,45 @@ def test_read_table_delegates_to_store_when_replay_mode_off(monkeypatch):
     assert out["region_id"].iloc[0] == REGION
 
     get_settings.cache_clear()
+
+
+def test_api_serves_the_snapshot_when_gold_is_gone(tmp_path, monkeypatch):
+    """The integrity claim, end to end: with `data/gold` pointed at an empty
+    directory, every operational endpoint still answers from the frozen copy.
+
+    Before the routes went through `read_table`, REPLAY_MODE only flipped a flag
+    in /health -- the endpoints read gold regardless, so replay "worked" on a
+    machine that happened to have gold and would have served nothing on one that
+    did not. That is exactly the failure this mode exists to prevent.
+    """
+    from fastapi.testclient import TestClient
+
+    from src.api import deps
+    from src.api.main import app
+
+    gold_root = tmp_path / "gold"
+    for table in TABLES:
+        _write_contract_gold(gold_root, table, RUN_TS)
+
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("REPLAY_MODE", "true")
+    monkeypatch.setenv("DATA_ROOT", str(tmp_path / "nothing-here"))
+    get_settings.cache_clear()
+    deps.get_store.cache_clear()
+    try:
+        snapshot(REGION, RUN_TS, gold_root=gold_root, settings=get_settings())
+        client = TestClient(app)
+        for path in ("/forecast", "/outlook", "/events", "/actions", "/explain"):
+            r = client.get(path, params={"region_id": REGION})
+            assert r.status_code == 200, f"{path} -> {r.status_code}: {r.text}"
+            body = r.json()
+            assert body["replay_mode"] is True, path
+            assert body["data"], f"{path} served nothing from the snapshot"
+            # Provenance must name the snapshot's run, not ambient gold state.
+            assert body["issued_at"].startswith("2026-09-09"), path
+    finally:
+        get_settings.cache_clear()
+        deps.get_store.cache_clear()
 
 
 def test_load_replay_returns_empty_frame_when_nothing_snapshotted(tmp_path, monkeypatch):

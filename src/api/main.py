@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from ..core.logging import setup_logging
 from .deps import get_settings
 from .errors import DomainError
-from .routes import actions, backtest, events, forecast, meta, outlook, storage
+from .routes import actions, backtest, events, explain, forecast, meta, outlook, storage
 
 
 @asynccontextmanager
@@ -38,7 +38,7 @@ def create_app() -> FastAPI:
             content={"error": type(exc).__name__, "message": exc.msg, "hint": exc.hint},
         )
 
-    for module in (meta, forecast, outlook, events, actions, storage, backtest):
+    for module in (meta, forecast, outlook, events, actions, storage, backtest, explain):
         app.include_router(module.router)
 
     return app

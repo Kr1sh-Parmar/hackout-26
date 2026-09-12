@@ -25,6 +25,7 @@ __all__ = [
     "Recommendation",
     "SweepPoint",
     "LeadHourMetric",
+    "Driver",
     "Health",
     "SiteInfo",
     "ForecastResponse",
@@ -33,6 +34,7 @@ __all__ = [
     "ActionsResponse",
     "SweepResponse",
     "BacktestResponse",
+    "ExplainResponse",
 ]
 
 
@@ -48,6 +50,7 @@ class Provenance(BaseModel):
     calibration_date: str | None = None
     nwp_models: list[str] = []
     replay_mode: bool = False
+    age_minutes: float | None = None
 
 
 class ForecastPoint(BaseModel):
@@ -126,6 +129,24 @@ class LeadHourMetric(BaseModel):
     n_obs: int | None = None
 
 
+class Driver(BaseModel):
+    """One feature's signed contribution to the p50 residual correction.
+
+    Units are capacity factor, and the sign is meaningful: positive means this
+    feature pushed the forecast ABOVE what physics alone predicted.
+    """
+
+    valid_ts_utc: dt.datetime
+    lead_hours: int
+    tech: Tech
+    rank: int
+    feature: str
+    value: float | None = None
+    contribution: float
+    base_cf: float | None = None
+    prediction_cf: float | None = None
+
+
 class Health(BaseModel):
     status: str
     replay_mode: bool
@@ -163,3 +184,7 @@ class SweepResponse(Provenance):
 
 class BacktestResponse(Provenance):
     data: list[LeadHourMetric]
+
+
+class ExplainResponse(Provenance):
+    data: list[Driver]

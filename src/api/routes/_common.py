@@ -9,8 +9,9 @@ import pandas as pd
 import yaml
 
 from ...core.config import RegionConfig, load_region
+from ...ingest.replay import latest_replay_run
 from ..deps import get_settings
-from ..errors import RegionNotConfigured
+from ..errors import ForecastUnavailable, RegionNotConfigured, StaleForecast
 
 REGION_DIR = pathlib.Path("config/regions")
 
@@ -35,10 +36,49 @@ def as_utc(ts: dt.datetime | None) -> dt.datetime | None:
     return ts
 
 
+def require_fresh_run(region_id: str, store, run_ts: dt.datetime | None = None) -> None:
+    """Refuse to answer an operational question we have no current answer to.
+
+    An empty 200 says "nothing is happening on the grid"; "no model has ever run
+    here" says something completely different, and an operator sizing reserves is
+    entitled to tell them apart. Two deliberate exemptions:
+
+    - `run_ts` pinned -- the caller asked for one specific historical run, which
+      is a replay request, not a request for current conditions.
+    - replay mode -- the data is frozen ON PURPOSE. Erroring on its age would
+      break the offline demo path, which is an integrity feature, not a bug.
+    """
+    if get_settings().replay_mode:
+        # Freshness in replay is "is there a snapshot", never "how old is it".
+        if latest_replay_run(region_id) is None:
+            raise ForecastUnavailable(region_id)
+        return
+    latest = store.latest_run(region_id)
+    if latest is None:
+        raise ForecastUnavailable(region_id)
+    if run_ts is not None:
+        return
+    age_min = _age_minutes(latest)
+    if age_min > get_settings().stale_after_minutes:
+        raise StaleForecast(region_id, age_min)
+
+
+def _age_minutes(latest: dt.datetime | None) -> float | None:
+    if latest is None:
+        return None
+    if latest.tzinfo is None:
+        latest = latest.replace(tzinfo=dt.timezone.utc)
+    return (dt.datetime.now(dt.timezone.utc) - latest).total_seconds() / 60
+
+
 def provenance_fields(
     region_id: str, store, cfg: RegionConfig, df: pd.DataFrame | None = None
 ) -> dict:
-    latest = store.latest_run(region_id)
+    # In replay, `issued_at` must be the SNAPSHOT's run, not whatever happens to
+    # sit in data/gold -- otherwise the screen shows a timestamp belonging to
+    # data nobody is looking at.
+    latest = latest_replay_run(region_id) if get_settings().replay_mode else None
+    latest = latest or store.latest_run(region_id)
     issued_at = latest or dt.datetime.now(dt.timezone.utc)
     model_version = "unavailable"
     calibration_date = None
@@ -54,6 +94,9 @@ def provenance_fields(
         "calibration_date": calibration_date,
         "nwp_models": cfg.nwp_models,
         "replay_mode": get_settings().replay_mode,
+        # Served alongside the data so a consumer can render "3 h old" itself.
+        # Age is a property of the answer, not only a reason to withhold it.
+        "age_minutes": _age_minutes(latest),
     }
 
 
