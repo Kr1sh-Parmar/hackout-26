@@ -12,11 +12,14 @@ Two sources, unified into one table keyed by
 Only the prev_day rows are legitimate training data for a 24-72 h model. The
 day0 rows are kept for bias/skill reference, never as the 24-72 h training set.
 """
-from __future__ import annotations
-import glob, pathlib, re
-import numpy as np, pandas as pd
 
-BRONZE = pathlib.Path("data/bronze"); SILVER = pathlib.Path("data/silver")
+from __future__ import annotations
+import glob
+import pathlib
+import pandas as pd
+
+BRONZE = pathlib.Path("data/bronze")
+SILVER = pathlib.Path("data/silver")
 REGION_ID = "BE"
 
 RENAME = {
@@ -50,7 +53,8 @@ META = ["grid_point_id", "weight", "nwp_model", "latitude", "longitude", "elevat
 
 
 def _write(df, layer, name):
-    dest = layer / name; dest.mkdir(parents=True, exist_ok=True)
+    dest = layer / name
+    dest.mkdir(parents=True, exist_ok=True)
     df.to_parquet(dest / "part-0.parquet", index=False)
     print(f"  wrote {layer.name}/{name:24} {len(df):>9,} rows  {len(df.columns)} cols")
 
@@ -71,7 +75,7 @@ def build_day0() -> pd.DataFrame:
     keep = ["valid_ts_utc"] + META + [v for v in RENAME.values() if v in out.columns]
     out = out[keep].copy()
     out["forecast_vintage"] = "day0_best"
-    out["run_ts_utc"] = out.valid_ts_utc.dt.normalize()      # that day's 00Z run
+    out["run_ts_utc"] = out.valid_ts_utc.dt.normalize()  # that day's 00Z run
     out["run_ts_is_approx"] = True
     return out
 
@@ -79,10 +83,22 @@ def build_day0() -> pd.DataFrame:
 # Canonical previous-run variable set. The first 7 files were fetched with a wider
 # list before the quota forced a trim; restricting to this intersection keeps the
 # silver schema uniform across all 15 without re-downloading the wide ones.
-CORE_PREV = ["shortwave_radiation", "direct_normal_irradiance", "diffuse_radiation",
-             "temperature_2m", "relative_humidity_2m", "surface_pressure",
-             "cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high",
-             "wind_speed_10m", "wind_speed_100m", "wind_direction_100m", "wind_gusts_10m"]
+CORE_PREV = [
+    "shortwave_radiation",
+    "direct_normal_irradiance",
+    "diffuse_radiation",
+    "temperature_2m",
+    "relative_humidity_2m",
+    "surface_pressure",
+    "cloud_cover",
+    "cloud_cover_low",
+    "cloud_cover_mid",
+    "cloud_cover_high",
+    "wind_speed_10m",
+    "wind_speed_100m",
+    "wind_direction_100m",
+    "wind_gusts_10m",
+]
 
 
 def build_prev() -> pd.DataFrame:
@@ -116,20 +132,24 @@ def main() -> None:
     out = pd.concat(parts, ignore_index=True)
 
     out.insert(0, "region_id", REGION_ID)
-    out["lead_hours"] = ((out.valid_ts_utc - out.run_ts_utc)
-                         .dt.total_seconds().div(3600).round().astype("int32"))
+    out["lead_hours"] = (
+        (out.valid_ts_utc - out.run_ts_utc).dt.total_seconds().div(3600).round().astype("int32")
+    )
     # is_day is geometric -- it depends on valid time and location only, never on
     # which forecast run produced the row. The prev-run pull omits it, so fill it
     # from the day0 rows at the same (valid_ts, grid_point). Leaving it NaN->0 would
     # silently mark every 24-72 h row as night and erase the whole solar training set.
     if "is_day" in out:
-        src = (out.loc[out.forecast_vintage == "day0_best",
-                       ["valid_ts_utc", "grid_point_id", "is_day"]]
-                  .dropna().drop_duplicates(["valid_ts_utc", "grid_point_id"]))
+        src = (
+            out.loc[
+                out.forecast_vintage == "day0_best", ["valid_ts_utc", "grid_point_id", "is_day"]
+            ]
+            .dropna()
+            .drop_duplicates(["valid_ts_utc", "grid_point_id"])
+        )
         lut = src.set_index(["valid_ts_utc", "grid_point_id"])["is_day"]
         idx = pd.MultiIndex.from_arrays([out.valid_ts_utc, out.grid_point_id])
-        out["is_day"] = out["is_day"].fillna(pd.Series(lut.reindex(idx).values,
-                                                       index=out.index))
+        out["is_day"] = out["is_day"].fillna(pd.Series(lut.reindex(idx).values, index=out.index))
         missing = int(out.is_day.isna().sum())
         if missing:
             print(f"  WARNING is_day still null on {missing:,} rows")
@@ -147,17 +167,29 @@ def main() -> None:
         print("  dropping all-null columns:", empty)
         out = out.drop(columns=empty)
 
-    front = ["region_id", "run_ts_utc", "valid_ts_utc", "lead_hours", "forecast_vintage",
-             "run_ts_is_approx", "nwp_model", "grid_point_id", "weight"]
+    front = [
+        "region_id",
+        "run_ts_utc",
+        "valid_ts_utc",
+        "lead_hours",
+        "forecast_vintage",
+        "run_ts_is_approx",
+        "nwp_model",
+        "grid_point_id",
+        "weight",
+    ]
     out = out[front + [c for c in out.columns if c not in front]]
     out = out.sort_values(key).reset_index(drop=True)
     _write(out, SILVER, "weather_nwp")
 
     print("\n  vintage / lead-hour coverage:")
-    g = (out.groupby("forecast_vintage")
-           .agg(n=("valid_ts_utc", "size"), lead_min=("lead_hours", "min"),
-                lead_max=("lead_hours", "max"), t0=("valid_ts_utc", "min"),
-                t1=("valid_ts_utc", "max")))
+    g = out.groupby("forecast_vintage").agg(
+        n=("valid_ts_utc", "size"),
+        lead_min=("lead_hours", "min"),
+        lead_max=("lead_hours", "max"),
+        t0=("valid_ts_utc", "min"),
+        t1=("valid_ts_utc", "max"),
+    )
     print(g.to_string())
 
 

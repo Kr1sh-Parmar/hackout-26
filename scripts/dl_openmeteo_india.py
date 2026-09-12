@@ -8,13 +8,18 @@ archive (most non-ECMWF models start 2021-22) and the Zenodo Indian series,
 which ends 2022-10-31. Using historical FORECAST here, not ERA5, keeps the
 India path free of the train/serve skew that reanalysis introduces.
 """
+
 from __future__ import annotations
-import json, pathlib, sys, time
-import pandas as pd, requests, xarray as xr
+import json
+import pathlib
+import sys
+import pandas as pd
+import xarray as xr
 from om_quota import fetch_json, DailyQuotaExhausted
 
 RAWI = pathlib.Path("data/raw/india")
-OUT = pathlib.Path("data/raw/openmeteo/india"); OUT.mkdir(parents=True, exist_ok=True)
+OUT = pathlib.Path("data/raw/openmeteo/india")
+OUT.mkdir(parents=True, exist_ok=True)
 URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 MODELS = ["ecmwf_ifs025", "icon_seamless", "gfs_seamless"]
 START, END = "2021-01-01", "2022-10-31"
@@ -25,11 +30,13 @@ TOP_N = 6
 # (snow, visibility, rain, dew point, msl pressure, 10m direction, terrestrial and
 # direct radiation) cuts the quota cost ~36% for no loss of modelling signal.
 # Snow/visibility in particular carry nothing for an Indian fleet.
-HOURLY = ("temperature_2m,relative_humidity_2m,surface_pressure,"
-          "cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,"
-          "shortwave_radiation,diffuse_radiation,direct_normal_irradiance,"
-          "wind_speed_10m,wind_speed_100m,wind_direction_100m,wind_gusts_10m,"
-          "precipitation,is_day")
+HOURLY = (
+    "temperature_2m,relative_humidity_2m,surface_pressure,"
+    "cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,"
+    "shortwave_radiation,diffuse_radiation,direct_normal_irradiance,"
+    "wind_speed_10m,wind_speed_100m,wind_direction_100m,wind_gusts_10m,"
+    "precipitation,is_day"
+)
 
 
 def grid_points() -> pd.DataFrame:
@@ -37,8 +44,7 @@ def grid_points() -> pd.DataFrame:
     frames = {}
     for tech in ("solar", "wind"):
         ds = xr.open_dataset(RAWI / f"CEA_1x1_gridded_installed_{tech}_cap.nc")
-        d = (ds["__xarray_dataarray_variable__"].to_dataframe(name="cap")
-             .reset_index().dropna())
+        d = ds["__xarray_dataarray_variable__"].to_dataframe(name="cap").reset_index().dropna()
         d = d[d.cap > 0].nlargest(TOP_N, "cap")
         d[f"weight_{tech}"] = d.cap / d.cap.sum()
         frames[tech] = d[["latitude", "longitude", f"weight_{tech}"]]
@@ -52,13 +58,22 @@ def grid_points() -> pd.DataFrame:
 def fetch(row, model) -> bool:
     dest = OUT / f"{row.grid_point_id}_{model}.parquet"
     if dest.exists():
-        print(f"  skip {dest.name}"); return True
-    j = fetch_json(URL, {
-        "latitude": float(row.latitude), "longitude": float(row.longitude),
-        "start_date": START, "end_date": END,
-        "hourly": HOURLY, "models": model,
-        "wind_speed_unit": "ms", "timezone": "UTC",
-    }, f"{row.grid_point_id}/{model}")
+        print(f"  skip {dest.name}")
+        return True
+    j = fetch_json(
+        URL,
+        {
+            "latitude": float(row.latitude),
+            "longitude": float(row.longitude),
+            "start_date": START,
+            "end_date": END,
+            "hourly": HOURLY,
+            "models": model,
+            "wind_speed_unit": "ms",
+            "timezone": "UTC",
+        },
+        f"{row.grid_point_id}/{model}",
+    )
     if j is None:
         return False
     df = pd.DataFrame(j["hourly"])
@@ -86,8 +101,7 @@ if __name__ == "__main__":
     except DailyQuotaExhausted as e:
         print("DAILY QUOTA EXHAUSTED -- stopping rather than spinning.", file=sys.stderr)
         print(f"  {e}", file=sys.stderr)
-        print("Resumable: re-run after UTC midnight; completed files are skipped.",
-              file=sys.stderr)
+        print("Resumable: re-run after UTC midnight; completed files are skipped.", file=sys.stderr)
         sys.exit(2)
     print("FAILED:", failed or "none")
     sys.exit(1 if failed else 0)

@@ -51,7 +51,10 @@ archetypes:
        shear_alpha: 0.11, wake_loss_frac: 0.12}
 
 decision_thresholds:
-  ramp_limit_mw_per_h: 400      # [ASSUMED]
+  # [MEASURED] |d net_load/dt| over the gold horizon: p50 355, p95 1205, max 2903 MW/h.
+  # The documented 400 fires on 45% of all hours -- an alert that frequent is noise,
+  # not a signal. 1200 marks the genuinely steep top ~5%.
+  ramp_limit_mw_per_h: 1200
   band_limit_frac: 0.35         # p90-p10 above this fraction of capacity => LOW_CONFIDENCE
   must_run_mw: 2800             # [ASSUMED] -- measured demand ranges 5877..13612 MW
 

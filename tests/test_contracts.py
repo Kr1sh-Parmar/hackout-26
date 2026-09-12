@@ -42,7 +42,15 @@ def test_predict_signature():
 
 
 def test_recommend_signature():
-    assert list(inspect.signature(recommend).parameters) == ["outlook", "grid_state", "config"]
+    """The three positional inputs are the contract. Extra params are allowed
+    only if optional, so a caller written against the contract keeps working."""
+    p = inspect.signature(recommend).parameters
+    names = list(p)
+    assert names[:3] == ["outlook", "grid_state", "config"]
+    for extra in names[3:]:
+        assert p[extra].default is not inspect.Parameter.empty, (
+            f"{extra} was added to recommend() without a default, breaking the contract"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -141,26 +149,48 @@ def test_unknown_region_raises_with_a_hint():
 
 
 # --------------------------------------------------------------------------- #
-# unimplemented contracts fail loudly, never silently return nothing
+# A contract is honoured in exactly one of two ways: it is still a stub and says
+# so loudly, or it is implemented and returns the declared shape. Silently
+# returning something of the wrong shape is the failure this guards against.
+#
+# `predict` may also raise for a missing model artifact or an unknown region --
+# those are documented behaviours of an implemented function, not stub-ness.
 # --------------------------------------------------------------------------- #
+def _grid_state() -> GridState:
+    return GridState(
+        region_id="BE",
+        must_run_mw=2800,
+        storage_soc_mwh=200,
+        storage=load_region("BE").storage,
+        ramp_limit_mw_per_h=400,
+    )
+
+
 @pytest.mark.parametrize(
-    "call",
+    ("call", "columns", "allowed"),
     [
-        lambda: build_features(pd.DataFrame(), site_master(load_region("BE"), "solar")[0]),
-        lambda: predict("BE", pd.Timestamp("2026-09-10", tz="UTC")),
-        lambda: recommend(
-            pd.DataFrame(),
-            GridState(
-                region_id="BE",
-                must_run_mw=2800,
-                storage_soc_mwh=200,
-                storage=load_region("BE").storage,
-                ramp_limit_mw_per_h=400,
-            ),
-            load_region("BE"),
+        (
+            lambda: build_features(pd.DataFrame(), site_master(load_region("BE"), "solar")[0]),
+            FEATURE_COLUMNS,
+            (NotImplementedError,),
+        ),
+        (
+            lambda: predict("BE", pd.Timestamp("2026-09-10", tz="UTC")),
+            PREDICT_COLUMNS,
+            (NotImplementedError, FileNotFoundError, RuntimeError),
+        ),
+        (
+            lambda: recommend(pd.DataFrame(), _grid_state(), load_region("BE")),
+            RECOMMEND_COLUMNS,
+            (NotImplementedError,),
         ),
     ],
+    ids=["build_features", "predict", "recommend"],
 )
-def test_contracts_raise_until_implemented(call):
-    with pytest.raises(NotImplementedError):
-        call()
+def test_contract_returns_declared_shape_or_says_it_is_a_stub(call, columns, allowed):
+    try:
+        out = call()
+    except allowed:
+        return  # still a stub, or a documented runtime precondition
+    assert isinstance(out, pd.DataFrame), f"contract returned {type(out).__name__}, not a DataFrame"
+    assert list(out.columns) == columns, "implemented contract drifted from its declared columns"

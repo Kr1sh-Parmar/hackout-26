@@ -11,13 +11,21 @@ zero traffic was ~9 minutes.
 So: on 429, stop issuing the real request entirely and poll with a ~free probe
 (1 variable, 2 days) until the bucket drains, then resume.
 """
+
 from __future__ import annotations
-import sys, time
+import sys
+import time
 import requests
 
 PROBE_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
-PROBE_PARAMS = {"latitude": 50.85, "longitude": 4.35, "hourly": "temperature_2m",
-                "start_date": "2025-06-01", "end_date": "2025-06-02", "timezone": "UTC"}
+PROBE_PARAMS = {
+    "latitude": 50.85,
+    "longitude": 4.35,
+    "hourly": "temperature_2m",
+    "start_date": "2025-06-01",
+    "end_date": "2025-06-02",
+    "timezone": "UTC",
+}
 
 
 class DailyQuotaExhausted(RuntimeError):
@@ -33,7 +41,7 @@ def wait_for_quota(poll_s: int = 120, max_wait_s: int = 5400) -> bool:
         try:
             r = requests.get(PROBE_URL, params=PROBE_PARAMS, timeout=60)
             if r.status_code == 200:
-                print(f"    quota recovered after {waited//60} min", flush=True)
+                print(f"    quota recovered after {waited // 60} min", flush=True)
                 return True
             # "Daily" is not a window that reopens by waiting -- stop immediately
             # rather than burning 90 minutes discovering that.
@@ -41,9 +49,9 @@ def wait_for_quota(poll_s: int = 120, max_wait_s: int = 5400) -> bool:
                 raise DailyQuotaExhausted(r.text[:160])
         except DailyQuotaExhausted:
             raise
-        except Exception:                                        # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pass
-        print(f"    still throttled ({waited//60} min)", flush=True)
+        print(f"    still throttled ({waited // 60} min)", flush=True)
     return False
 
 
@@ -53,7 +61,9 @@ def date_chunks(start: str, end: str, days: int = 200):
     a partially-drained bucket keeps rejecting. Smaller chunks fit sooner and make
     progress incremental instead of all-or-nothing."""
     import datetime as _dt
-    a = _dt.date.fromisoformat(start); b = _dt.date.fromisoformat(end)
+
+    a = _dt.date.fromisoformat(start)
+    b = _dt.date.fromisoformat(end)
     out = []
     while a <= b:
         c = min(a + _dt.timedelta(days=days - 1), b)
@@ -62,8 +72,9 @@ def date_chunks(start: str, end: str, days: int = 200):
     return out
 
 
-def fetch_json(url: str, params: dict, label: str, tries: int = 6,
-               pace_s: float = 8.0) -> dict | None:
+def fetch_json(
+    url: str, params: dict, label: str, tries: int = 6, pace_s: float = 8.0
+) -> dict | None:
     """One paced, quota-aware GET. Returns parsed JSON or None."""
     for attempt in range(1, tries + 1):
         try:
@@ -75,14 +86,17 @@ def fetch_json(url: str, params: dict, label: str, tries: int = 6,
                 if not wait_for_quota():
                     print(f"    {label}: quota never recovered", file=sys.stderr)
                     return None
-                continue                      # retry without counting an attempt-sleep
+                continue  # retry without counting an attempt-sleep
             r.raise_for_status()
-            time.sleep(pace_s)                # be polite between successful calls
+            time.sleep(pace_s)  # be polite between successful calls
             return r.json()
         except DailyQuotaExhausted:
             raise
-        except Exception as e:                                   # noqa: BLE001
-            print(f"    {label}: attempt {attempt} failed: {str(e)[:120]}",
-                  file=sys.stderr, flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"    {label}: attempt {attempt} failed: {str(e)[:120]}",
+                file=sys.stderr,
+                flush=True,
+            )
             time.sleep(20 * attempt)
     return None

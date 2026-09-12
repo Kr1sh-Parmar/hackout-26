@@ -13,24 +13,43 @@ What this does do:
   * joins generation truth, demand and the Elia benchmark onto the same key
   * y is CAPACITY FACTOR; sample_weight is 0 on censored rows
 """
-from __future__ import annotations
-import pathlib
-import numpy as np, pandas as pd
 
-SILVER = pathlib.Path("data/silver"); GOLD = pathlib.Path("data/gold")
+from __future__ import annotations
+
+import pathlib
+
+import numpy as np
+import pandas as pd
+
+SILVER = pathlib.Path("data/silver")
+GOLD = pathlib.Path("data/gold")
 REGION_ID = "BE"
 
-WX_VARS = ["ghi_wm2", "dni_wm2", "dhi_wm2", "direct_radiation_wm2",
-           "temperature_2m_c", "dew_point_2m_c", "relative_humidity_2m_pct",
-           "surface_pressure_hpa", "cloud_cover_pct", "cloud_cover_low_pct",
-           "cloud_cover_mid_pct", "cloud_cover_high_pct",
-           "wind_speed_10m_ms", "wind_speed_100m_ms", "wind_direction_100m_deg",
-           "wind_gusts_10m_ms", "precipitation_mm"]
+WX_VARS = [
+    "ghi_wm2",
+    "dni_wm2",
+    "dhi_wm2",
+    "direct_radiation_wm2",
+    "temperature_2m_c",
+    "dew_point_2m_c",
+    "relative_humidity_2m_pct",
+    "surface_pressure_hpa",
+    "cloud_cover_pct",
+    "cloud_cover_low_pct",
+    "cloud_cover_mid_pct",
+    "cloud_cover_high_pct",
+    "wind_speed_10m_ms",
+    "wind_speed_100m_ms",
+    "wind_direction_100m_deg",
+    "wind_gusts_10m_ms",
+    "precipitation_mm",
+]
 KEY = ["run_ts_utc", "valid_ts_utc", "forecast_vintage"]
 
 
 def _write(df, name):
-    dest = GOLD / name; dest.mkdir(parents=True, exist_ok=True)
+    dest = GOLD / name
+    dest.mkdir(parents=True, exist_ok=True)
     df.to_parquet(dest / "part-0.parquet", index=False)
     print(f"  wrote gold/{name:22} {len(df):>9,} rows  {len(df.columns)} cols")
 
@@ -82,40 +101,56 @@ def hourly_generation(tech: str) -> pd.DataFrame:
     """15-min -> hourly. An hour containing any non-OK interval is not clean."""
     g = pd.read_parquet(SILVER / f"generation_actuals_{tech}" / "part-0.parquet")
     g["hour"] = g.ts_utc.dt.floor("h")
-    agg = g.groupby("hour").agg(
-        power_mw=("power_mw", "mean"),
-        monitored_capacity_mw=("monitored_capacity_mw", "mean"),
-        n_intervals=("power_mw", "size"),
-        n_ok=("qc_flag", lambda s: (s == "OK").sum()),
-    ).reset_index().rename(columns={"hour": "valid_ts_utc"})
+    agg = (
+        g.groupby("hour")
+        .agg(
+            power_mw=("power_mw", "mean"),
+            monitored_capacity_mw=("monitored_capacity_mw", "mean"),
+            n_intervals=("power_mw", "size"),
+            n_ok=("qc_flag", lambda s: (s == "OK").sum()),
+        )
+        .reset_index()
+        .rename(columns={"hour": "valid_ts_utc"})
+    )
     agg["qc_ok"] = agg.n_ok == agg.n_intervals
     agg[f"y_{tech}_mw"] = agg.power_mw
     agg[f"cap_{tech}_mw"] = agg.monitored_capacity_mw
     agg[f"y_{tech}_cf"] = agg.power_mw / agg.monitored_capacity_mw
     agg[f"qc_ok_{tech}"] = agg.qc_ok
-    return agg[["valid_ts_utc", f"y_{tech}_mw", f"cap_{tech}_mw",
-                f"y_{tech}_cf", f"qc_ok_{tech}"]]
+    return agg[["valid_ts_utc", f"y_{tech}_mw", f"cap_{tech}_mw", f"y_{tech}_cf", f"qc_ok_{tech}"]]
 
 
 def hourly_tso(tech: str) -> pd.DataFrame:
     t = pd.read_parquet(SILVER / f"tso_forecast_{tech}" / "part-0.parquet")
     t = t[t.horizon == "day_ahead_6pm"]
     t["valid_ts_utc"] = t.ts_utc.dt.floor("h")
-    a = t.groupby("valid_ts_utc").agg(
-        **{f"tso_{tech}_p10_mw": ("p10_mw", "mean"),
-           f"tso_{tech}_p50_mw": ("p50_mw", "mean"),
-           f"tso_{tech}_p90_mw": ("p90_mw", "mean")}).reset_index()
+    a = (
+        t.groupby("valid_ts_utc")
+        .agg(
+            **{
+                f"tso_{tech}_p10_mw": ("p10_mw", "mean"),
+                f"tso_{tech}_p50_mw": ("p50_mw", "mean"),
+                f"tso_{tech}_p90_mw": ("p90_mw", "mean"),
+            }
+        )
+        .reset_index()
+    )
     return a
 
 
 def hourly_load() -> pd.DataFrame:
-    l = pd.read_parquet(SILVER / "load" / "part-0.parquet")
-    l["valid_ts_utc"] = l.ts_utc.dt.floor("h")
-    return l.groupby("valid_ts_utc").agg(
-        demand_mw=("demand_mw", "mean"),
-        demand_da_mw=("demand_da_6pm_mw", "mean"),
-        demand_da_p10_mw=("demand_da_p10_mw", "mean"),
-        demand_da_p90_mw=("demand_da_p90_mw", "mean")).reset_index()
+    load = pd.read_parquet(SILVER / "load" / "part-0.parquet")
+    load["valid_ts_utc"] = load.ts_utc.dt.floor("h")
+    return (
+        load.groupby("valid_ts_utc")
+        .agg(
+            demand_mw=("demand_mw", "mean"),
+            demand_da_mw=("demand_da_6pm_mw", "mean"),
+            demand_da_p10_mw=("demand_da_p10_mw", "mean"),
+            demand_da_p90_mw=("demand_da_p90_mw", "mean"),
+        )
+        .reset_index()
+    )
 
 
 def main() -> None:
@@ -129,8 +164,9 @@ def main() -> None:
     base = base.merge(hourly_load(), on="valid_ts_utc", how="left")
 
     base.insert(0, "region_id", REGION_ID)
-    base["lead_hours"] = ((base.valid_ts_utc - base.run_ts_utc)
-                          .dt.total_seconds().div(3600).round().astype("int32"))
+    base["lead_hours"] = (
+        (base.valid_ts_utc - base.run_ts_utc).dt.total_seconds().div(3600).round().astype("int32")
+    )
 
     # censored labels carry no weight: curtailed / missing / frozen / out-of-range
     for tech in ("solar", "wind"):
@@ -142,8 +178,7 @@ def main() -> None:
     base = base.sort_values(["run_ts_utc", "valid_ts_utc"]).reset_index(drop=True)
     _write(base, "training_base")
 
-    train = base[base.forecast_vintage.str.startswith("prev_day")
-                 & base.lead_hours.between(24, 72)]
+    train = base[base.forecast_vintage.str.startswith("prev_day") & base.lead_hours.between(24, 72)]
     _write(train, "training_base_24_72h")
 
     print("\n  trainable rows by vintage (sample_weight=1):")

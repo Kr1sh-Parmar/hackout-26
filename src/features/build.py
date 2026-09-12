@@ -12,9 +12,16 @@ Owner: ML / Physics.  Consumers: models/, evaluation/.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
-from ..core.config import SiteMaster
+from ..core.config import SiteMaster, load_region, site_master
+from .archetype import aggregate_archetypes
+from .lags import lag_features
+from .nwp_quality import nwp_quality_features
+from .solar import SOLAR_COLUMNS, solar_features
+from .temporal import temporal_features
+from .wind import WIND_COLUMNS, wind_features
 
 # Index of the returned frame. Never collapse these two into one: a forecast is
 # identified by the run that produced it AND the hour it describes.
@@ -104,7 +111,77 @@ def build_features(
     Raises:
         ValueError: if a lag shorter than MIN_LAG_HOURS is requested.
     """
-    raise NotImplementedError("M3 -- see dev-03 §2-§5")
+    wx = _as_indexed(weather)
+    if len(wx) == 0:
+        return empty_features()
+
+    idx = pd.DatetimeIndex(wx.index)
+    blocks = [
+        temporal_features(idx),
+        nwp_quality_features(wx),
+        lag_features(actuals, idx, wx["lead_hours"]),
+    ]
+    if site.tech == "solar":
+        blocks.append(solar_features(wx, site))
+    else:
+        blocks.append(wind_features(wx, site))
+
+    out = pd.DataFrame(index=idx)
+    for block in blocks:
+        for col in block.columns:
+            out[col] = block[col].to_numpy()
+
+    out["lead_hours"] = wx["lead_hours"].to_numpy(dtype=float)
+    out["tech"] = site.tech
+    out["capacity_mw"] = float(site.capacity_mw)
+    # The other technology's physics is genuinely absent, not zero. NaN says so;
+    # zero would be read by the model as "the sun is down".
+    for col in SOLAR_COLUMNS if site.tech != "solar" else WIND_COLUMNS:
+        out[col] = np.nan
+
+    out.index = pd.MultiIndex.from_arrays(
+        [pd.DatetimeIndex(wx["run_ts_utc"]), idx], names=FEATURE_INDEX
+    )
+    return out[FEATURE_COLUMNS]
+
+
+def _as_indexed(weather: pd.DataFrame) -> pd.DataFrame:
+    """Accept the gold frame either flat or already indexed by valid_ts_utc."""
+    wx = weather.reset_index() if isinstance(weather.index, pd.MultiIndex) else weather
+    if "valid_ts_utc" in wx.columns:
+        wx = wx.set_index(pd.DatetimeIndex(wx["valid_ts_utc"]), drop=False)
+    elif len(wx):
+        wx = wx.copy()
+        wx["valid_ts_utc"] = pd.DatetimeIndex(wx.index)
+    if len(wx) and "run_ts_utc" not in wx.columns:
+        raise ValueError("weather must carry run_ts_utc; a forecast is identified by its run")
+    return wx
+
+
+def build_all_features(
+    region_id: str,
+    wx: pd.DataFrame,
+    actuals: pd.DataFrame | None = None,
+    tech: str = "solar",
+) -> pd.DataFrame:
+    """Regional feature matrix: every archetype, capacity-weighted into one row.
+
+    Grid points and NWP models are already aggregated upstream -- this loops
+    ARCHETYPES only. Re-aggregating space here would double-count it.
+    """
+    cfg = load_region(region_id)
+    sites = site_master(cfg, tech)
+    parts = [build_features(wx, s, actuals) for s in sites]
+    if not len(parts[0]):
+        return empty_features()
+
+    out = aggregate_archetypes(parts, [s.capacity_share for s in sites])
+    out["tech"] = tech
+    # Exact, not summed: float error in a capacity denominator is a permanent
+    # bias in every MW the platform reports.
+    out["capacity_mw"] = float(cfg.capacity_mw[tech])
+    out["lead_hours"] = parts[0]["lead_hours"].to_numpy()
+    return out[FEATURE_COLUMNS]
 
 
 def empty_features() -> pd.DataFrame:
