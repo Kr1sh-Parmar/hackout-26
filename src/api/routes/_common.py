@@ -10,9 +10,9 @@ import structlog
 import yaml
 
 from ...core.config import RegionConfig, load_region
-from ...ingest.replay import latest_replay_run
+from ...ingest.replay import latest_replay_run, list_replay_runs
 from ..deps import get_settings
-from ..errors import ForecastUnavailable, RegionNotConfigured, StaleForecast
+from ..errors import ForecastUnavailable, RegionNotConfigured, RunNotFound, StaleForecast
 
 REGION_DIR = pathlib.Path("config/regions")
 
@@ -39,15 +39,37 @@ def as_utc(ts: dt.datetime | None) -> dt.datetime | None:
     return ts
 
 
+def available_runs(region_id: str, store) -> list[pd.Timestamp]:
+    """Every run that can be served right now, newest first.
+
+    One answer for `/runs` AND for validating a pinned `run_ts`, taken from the
+    same source the routes read (the snapshot in replay, gold otherwise), so a
+    run picker can never offer a run the routes then refuse.
+    """
+    if get_settings().replay_mode:
+        return list_replay_runs(region_id)
+    return store.list_runs(region_id)
+
+
+def require_run(region_id: str, store, run_ts: dt.datetime | None) -> None:
+    """A pinned run that does not exist is a 404, not an empty 200 -- otherwise a
+    stale shared link renders as a grid where nothing is happening."""
+    if run_ts is None:
+        return
+    runs = available_runs(region_id, store)
+    if pd.Timestamp(run_ts) not in runs:
+        raise RunNotFound(region_id, pd.Timestamp(run_ts), runs)
+
+
 def require_fresh_run(region_id: str, store, run_ts: dt.datetime | None = None) -> None:
     """Refuse to answer an operational question we have no current answer to.
 
     An empty 200 says "nothing is happening on the grid"; "no model has ever run
     here" says something completely different, and an operator sizing reserves is
-    entitled to tell them apart. Two deliberate exemptions:
+    entitled to tell them apart. Two deliberate exemptions from the AGE check:
 
     - `run_ts` pinned -- the caller asked for one specific historical run, which
-      is a replay request, not a request for current conditions.
+      is a replay request, not a request for current conditions. It must exist.
     - replay mode -- the data is frozen ON PURPOSE. Erroring on its age would
       break the offline demo path, which is an integrity feature, not a bug.
     """
@@ -55,11 +77,13 @@ def require_fresh_run(region_id: str, store, run_ts: dt.datetime | None = None) 
         # Freshness in replay is "is there a snapshot", never "how old is it".
         if latest_replay_run(region_id) is None:
             raise ForecastUnavailable(region_id)
+        require_run(region_id, store, run_ts)
         return
     latest = store.latest_run(region_id)
     if latest is None:
         raise ForecastUnavailable(region_id)
     if run_ts is not None:
+        require_run(region_id, store, run_ts)
         return
     age_min = _age_minutes(latest)
     if age_min > get_settings().stale_after_minutes:
@@ -75,7 +99,11 @@ def _age_minutes(latest: dt.datetime | None) -> float | None:
 
 
 def provenance_fields(
-    region_id: str, store, cfg: RegionConfig, df: pd.DataFrame | None = None
+    region_id: str,
+    store,
+    cfg: RegionConfig,
+    df: pd.DataFrame | None = None,
+    run_ts: dt.datetime | None = None,
 ) -> dict:
     """Provenance for one response -- and the one structured log line per served
     request (dev-01 12).
@@ -90,6 +118,17 @@ def provenance_fields(
     # data nobody is looking at.
     latest = latest_replay_run(region_id) if get_settings().replay_mode else None
     latest = latest or store.latest_run(region_id)
+    # A pinned run labels its own response -- including when the filters left no
+    # rows to read it from (a 1 h horizon on a run that starts at lead 24 served
+    # an empty list stamped with the LATEST run's time).
+    if run_ts is not None:
+        latest = run_ts
+    # Otherwise the run the rows actually came from wins over "latest", so the
+    # label can never belong to a different cycle than the numbers.
+    elif df is not None and not df.empty and "run_ts_utc" in df.columns:
+        served = pd.to_datetime(df["run_ts_utc"], utc=True).max()
+        if pd.notna(served):
+            latest = served.to_pydatetime()
     issued_at = latest or dt.datetime.now(dt.timezone.utc)
     model_version = "unavailable"
     calibration_date = None

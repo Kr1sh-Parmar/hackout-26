@@ -131,7 +131,9 @@ def run(region: str, tech: str, quick: bool) -> dict:
     )
 
     OUT.mkdir(parents=True, exist_ok=True)
-    report.assign(region_id=region, tech=tech).to_parquet(
+    # `folds` travels with the table so /backtest can state the headline's basis
+    # without reaching for artifacts/backtest.json, which replay does not freeze.
+    report.assign(region_id=region, tech=tech, folds=len(folds)).to_parquet(
         OUT / f"region_id={region}_tech={tech}.parquet", index=False
     )
     return {"region": region, "tech": tech, "folds": len(folds), **metrics}

@@ -141,6 +141,21 @@ class ParquetStore:
         sql = "SELECT * FROM read_parquet(?, hive_partitioning=1) WHERE region_id = ? AND tech = ?"
         return self._query(sql, [self._glob("gold", "backtest"), region_id, tech])
 
+    def list_runs(self, region_id: str) -> list[pd.Timestamp]:
+        """Every forecast run in gold for a region, newest first. Every cycle writes
+        `forecast`, so its runs are the runs."""
+        if not self._exists("gold", "forecast"):
+            return []
+        df = self._query(
+            "SELECT DISTINCT run_ts_utc AS r FROM read_parquet(?, hive_partitioning=1) "
+            "WHERE region_id = ? ORDER BY r DESC",
+            [self._glob("gold", "forecast"), region_id],
+        )
+        if df.empty:
+            return []
+        stamps = (pd.Timestamp(t) for t in df["r"])
+        return [t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC") for t in stamps]
+
     def latest_run(self, region_id: str) -> dt.datetime | None:
         for name in ("forecast", "outlook"):
             if not self._exists("gold", name):

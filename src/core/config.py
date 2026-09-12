@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # Softer bar: /health warns here rather than erroring, so ingest lag is
     # visible long before it becomes a refusal.
     stale_warn_after_minutes: int = 180
+    # Browsers allowed to call the API directly. The frontend normally goes through
+    # a same-origin proxy (Vite in dev, nginx in docker) and needs no CORS at all;
+    # these cover `vite` and `vite preview` pointed straight at :8000.
+    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:4173"]
 
 
 class Archetype(BaseModel):

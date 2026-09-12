@@ -41,4 +41,4 @@ def get_explain(
     if not df.empty:
         df = df[df["rank"] < top_n]
     data = records(df, EXPLAIN_COLUMNS)
-    return ExplainResponse(**provenance_fields(region_id, store, cfg, df), data=data)
+    return ExplainResponse(**provenance_fields(region_id, store, cfg, df, run_ts), data=data)

@@ -174,3 +174,33 @@ def test_every_served_response_logs_its_provenance(path, params, never_stale):
     served = [e for e in entries if e.get("event") == "served"]
     assert served, f"{path} served a response without logging it"
     assert {"region_id", "run_ts", "model_version"} <= set(served[0])
+
+
+def test_served_backtest_headline_is_the_published_one():
+    """/backtest's summary must reproduce artifacts/backtest.json to float precision:
+    both come from `summarise`, over the same per-lead table."""
+    import json
+    import pathlib
+
+    artifact = pathlib.Path("artifacts/backtest.json")
+    if not artifact.exists():
+        pytest.skip("no artifacts/backtest.json; run scripts/backtest.py")
+    for published in json.loads(artifact.read_text()):
+        r = client.get(
+            "/backtest", params={"region_id": published["region"], "tech": published["tech"]}
+        )
+        assert r.status_code == 200, r.text
+        served = r.json()["summary"]
+        if served is None:
+            pytest.skip("no backtest gold table to serve")
+        for key in ("nrmse_mean", "nrmse_persistence", "nrmse_tso", "skill_mean", "picp_mean"):
+            assert served[key] == pytest.approx(published[key], rel=1e-9), (published["tech"], key)
+        if served["folds"] is not None:
+            assert served["folds"] == published["folds"]
+
+
+def test_sites_say_which_regions_are_physics_only():
+    from src.core.config import load_region
+
+    for site in client.get("/sites").json():
+        assert site["physics_only"] == load_region(site["region_id"]).physics_only

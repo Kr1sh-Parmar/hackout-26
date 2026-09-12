@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.tsbuildinfo
+# Intermediate for `npm run gen:api`; the generated src/api/schema.d.ts is what gets committed.
+openapi.json
+.playwright-mcp/

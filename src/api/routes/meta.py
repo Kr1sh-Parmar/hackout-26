@@ -9,8 +9,8 @@ from ...core.config import load_region
 from ...core.store import ParquetStore
 from ...ingest.replay import latest_replay_run, read_table
 from ..deps import get_settings, get_store
-from ..schemas import Health, SiteInfo
-from ._common import list_region_ids
+from ..schemas import Health, RunsResponse, SiteInfo
+from ._common import available_runs, list_region_ids, resolve_region
 
 router = APIRouter()
 
@@ -25,9 +25,24 @@ def get_sites() -> list[SiteInfo]:
             timezone=cfg.timezone,
             capacity_mw=cfg.capacity_mw,
             nwp_models=cfg.nwp_models,
+            physics_only=cfg.physics_only,
         )
         for cfg in (load_region(rid) for rid in list_region_ids())
     ]
+
+
+@router.get("/runs", response_model=RunsResponse)
+def get_runs(region_id: str, store: ParquetStore = Depends(get_store)) -> RunsResponse:
+    """The forecast runs that can be served, newest first -- what a run picker
+    offers. Any of them is a valid `run_ts` for the operational endpoints."""
+    resolve_region(region_id)
+    runs = available_runs(region_id, store)
+    return RunsResponse(
+        region_id=region_id,
+        replay_mode=get_settings().replay_mode,
+        latest=runs[0] if runs else None,
+        runs=runs,
+    )
 
 
 @router.get("/health", response_model=Health)

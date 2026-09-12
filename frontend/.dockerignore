@@ -1,0 +1,6 @@
+# Host node_modules carry platform-specific binaries (esbuild); the image installs its own.
+node_modules
+dist
+*.tsbuildinfo
+openapi.json
+.playwright-mcp

@@ -45,4 +45,4 @@ def get_forecast(
             "calibrated",
         ],
     )
-    return ForecastResponse(**provenance_fields(region_id, store, cfg, df), data=data)
+    return ForecastResponse(**provenance_fields(region_id, store, cfg, df, run_ts), data=data)

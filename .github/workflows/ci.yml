@@ -40,6 +40,24 @@ jobs:
           REPLAY_MODE: "true"
         run: pytest tests/integration/test_replay.py -q
 
+      # The console is typed against these exact response models. Regenerate its
+      # types from the app and fail if the committed ones drifted, then type-check
+      # and build it -- a renamed field breaks the build here, not in a demo.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: frontend types match the API
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run gen:api
+          git diff --exit-code src/api/schema.d.ts
+      - name: frontend build
+        working-directory: frontend
+        run: npm run build
+
   # No network in CI, ever. Every ingest adapter is exercised against fixtures;
   # a green build that depended on Open-Meteo or Elia being up would be a
   # weather report, not a test result.

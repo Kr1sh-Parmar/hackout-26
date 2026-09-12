@@ -26,4 +26,4 @@ def get_events(
     require_fresh_run(region_id, store, run_ts)
     df = read_table(region_id, "events", store, run_ts=run_ts, min_severity=min_severity)
     data = records(df, EVENT_COLUMNS)
-    return EventsResponse(**provenance_fields(region_id, store, cfg, df), data=data)
+    return EventsResponse(**provenance_fields(region_id, store, cfg, df, run_ts), data=data)

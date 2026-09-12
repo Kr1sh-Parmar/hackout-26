@@ -25,6 +25,7 @@ __all__ = [
     "Recommendation",
     "SweepPoint",
     "LeadHourMetric",
+    "BacktestSummary",
     "Driver",
     "Health",
     "SiteInfo",
@@ -32,6 +33,8 @@ __all__ = [
     "OutlookResponse",
     "EventsResponse",
     "ActionsResponse",
+    "AckResponse",
+    "RunsResponse",
     "SweepResponse",
     "BacktestResponse",
     "ExplainResponse",
@@ -100,6 +103,9 @@ class GridEvent(BaseModel):
 
 
 class Recommendation(BaseModel):
+    # Stable for this action in this run: what an acknowledgement is keyed by.
+    # Derived, not stored -- see `api.acks.action_id`.
+    action_id: str
     action: Action
     flag: Flag
     valid_from: dt.datetime
@@ -111,6 +117,22 @@ class Recommendation(BaseModel):
     decisive: bool
     rationale: str
     linked_event_id: str | None = None
+    acknowledged_at: dt.datetime | None = None
+
+
+class AckResponse(BaseModel):
+    region_id: str
+    action_id: str
+    # None after an acknowledgement is withdrawn.
+    acknowledged_at: dt.datetime | None = None
+
+
+class RunsResponse(BaseModel):
+    region_id: str
+    replay_mode: bool
+    latest: dt.datetime | None = None
+    # Newest first. Any of these is a valid `run_ts` for the operational routes.
+    runs: list[dt.datetime]
 
 
 class SweepPoint(BaseModel):
@@ -145,6 +167,33 @@ class LeadHourMetric(BaseModel):
     mean_width_frac: float | None = None
 
 
+class BacktestSummary(BaseModel):
+    """The headline over the whole walk-forward.
+
+    Computed by `evaluation.report.summarise` -- the same function that writes
+    `artifacts/backtest.json` -- so the served headline and the published one
+    cannot disagree. Clients must not re-derive it from the per-lead rows: the
+    obvious pooled RMS gives 6.05% solar nRMSE where the headline (a row-weighted
+    mean, skill from the aggregated errors) is 5.36%.
+    """
+
+    folds: int | None = None
+    n_rows: int
+    leads_scored: int
+    leads_in_band: int
+    picp_target_low: float
+    picp_target_high: float
+    nrmse_mean: float | None = None
+    nrmse_persistence: float | None = None
+    nrmse_physics: float | None = None
+    nrmse_tso: float | None = None
+    nrmse_tso_wa: float | None = None
+    skill_mean: float | None = None
+    skill_vs_physics: float | None = None
+    mbe_mean: float | None = None
+    picp_mean: float | None = None
+
+
 class Driver(BaseModel):
     """One feature's signed contribution to the p50 residual correction.
 
@@ -176,6 +225,9 @@ class SiteInfo(BaseModel):
     timezone: str
     capacity_mw: dict[str, float]
     nwp_models: list[str]
+    # No labels to train or calibrate against: a transfer region, which serves a
+    # physics-only forecast and makes no accuracy claim.
+    physics_only: bool = False
 
 
 class ForecastResponse(Provenance):
@@ -200,6 +252,7 @@ class SweepResponse(Provenance):
 
 class BacktestResponse(Provenance):
     data: list[LeadHourMetric]
+    summary: BacktestSummary | None = None
 
 
 class ExplainResponse(Provenance):

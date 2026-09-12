@@ -220,21 +220,23 @@ Split-conformal calibration, tuned via measurement:
 
 ## 5. API Surface
 
-FastAPI application exposing 9 endpoints, auto-documented via OpenAPI (`/docs`):
+FastAPI application exposing 12 operations, auto-documented via OpenAPI (`/docs`):
 
 | Endpoint | Returns |
 |---|---|
 | `GET /health` | System status, model freshness, warnings |
-| `GET /sites` | Configured regions and fleet parameters |
+| `GET /sites` | Configured regions, fleet parameters, and whether a region is physics-only |
+| `GET /runs` | The forecast runs that can be served, newest first — each a valid `run_ts` |
 | `GET /forecast` | P10/P50/P90 generation forecast, per hour, per technology |
 | `GET /outlook` | Net-load balance with propagated uncertainty bands |
 | `GET /events` | Detected grid events with severity and lead time |
-| `GET /actions` | Ranked, sized, priced grid-action recommendations |
+| `GET /actions` | Ranked, sized, priced grid-action recommendations, each with an `action_id` and its acknowledgement state |
+| `POST` / `DELETE /actions/{action_id}/ack` | Record or withdraw an operator acknowledgement (persisted under `data/ops/`, scoped to the run) |
 | `GET /storage/sweep` | Curtailment-avoided vs. battery-capacity sizing curve |
-| `GET /backtest` | Historical accuracy metrics, per lead hour |
+| `GET /backtest` | Accuracy per lead hour, plus the headline `summary` — computed by the same `summarise()` that writes `artifacts/backtest.json` |
 | `GET /explain` | Ranked SHAP drivers of the forecast correction, per hour |
 
-Every response carries **provenance** (`model_version`, `calibration_date`, `replay_mode`) so any served number is traceable back to the model and data that produced it.
+Every response carries **provenance** (`model_version`, `calibration_date`, `replay_mode`) so any served number is traceable back to the model and data that produced it. Operational endpoints accept `run_ts` to pin a historical run, in live and replay mode alike; an unknown run is a 404 that names the runs that exist.
 
 ---
 
@@ -288,18 +290,30 @@ Every action carries a size, a value, and a stated confidence — the platform's
 
 ## 8. Reproducibility & Testing
 
-- **160 automated tests** covering physics correctness, feature-parity between training and serving, leakage guards, API contracts, and calibration behaviour
+- **210 automated tests** covering physics correctness, feature-parity between training and serving, leakage guards, API contracts, run selection, operator acknowledgements, and calibration behaviour
 - **Zero data leakage by construction**: no random train/test splits anywhere in the codebase; every split is chronological with an explicit gap
 - **Deterministic aggregation**: the same regional weather-aggregation function is called by both the historical training pipeline and the live serving path, verified identical to floating-point precision
 - **Replay mode**: a full forecast cycle can be snapshotted and replayed with zero network access, for reliable offline demonstration — every operational endpoint reads through the same switch, verified against an empty data root so the frozen copy is genuinely what gets served
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests/ -q          # 160 tests
+python -m pytest tests/ -q          # 210 tests
 python scripts/backtest.py --region BE
 python scripts/run_cycle.py --region BE --live
 uvicorn src.api.main:app --reload   # API at localhost:8000/docs
 ```
+
+**Operations console** (`frontend/`, React + Vite). It calls the API through a same-origin `/api` proxy, so it never needs CORS or a hardcoded host:
+
+```bash
+npm --prefix frontend ci
+REPLAY_MODE=true uvicorn src.api.main:app --port 8000   # or: make demo  (offline, frozen runs)
+npm --prefix frontend run dev                           # or: make ui    -> http://localhost:5173
+npm --prefix frontend run gen:api                       # after changing a response model; CI fails on drift
+docker compose up --build                               # api on :8000, console on http://localhost:8080
+```
+
+Every panel reads the live API — there is no mock data in the frontend. With the API down, each panel says so and shows the hint for starting it.
 
 ---
 

@@ -26,9 +26,10 @@ venv/
 .mypy_cache/
 .ipynb_checkpoints/
 
-# node / ui
-ui/node_modules/
-ui/dist/
+# operator state written by the API at runtime (action acknowledgements)
+data/ops/
+
+# node: frontend/.gitignore covers the console
 
 # os
 .DS_Store

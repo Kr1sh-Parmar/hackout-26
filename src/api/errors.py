@@ -40,6 +40,29 @@ class ForecastUnavailable(DomainError):
         )
 
 
+class RunNotFound(DomainError):
+    status_code = 404
+
+    def __init__(self, region_id: str, run_ts, known: list):
+        listed = [t.isoformat() for t in known[:10]]
+        super().__init__(
+            msg=f"no run at {run_ts.isoformat()} for region {region_id!r}",
+            hint=f"available runs, newest first: {listed or 'none'}. "
+            f"GET /runs?region_id={region_id} lists them all.",
+        )
+
+
+class ActionNotFound(DomainError):
+    status_code = 404
+
+    def __init__(self, region_id: str, action_id: str):
+        super().__init__(
+            msg=f"no action {action_id!r} in the {region_id!r} run being served",
+            hint="action ids come from GET /actions for the same region and run_ts; "
+            "a newer cycle may have replaced the run you were looking at -- refetch /actions.",
+        )
+
+
 class StaleForecast(DomainError):
     status_code = 503
 

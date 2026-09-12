@@ -28,4 +28,4 @@ def get_outlook(
     require_fresh_run(region_id, store, run_ts)
     df = read_table(region_id, "outlook", store, run_ts=run_ts, horizon=horizon_hours)
     data = records(df, _POINT_COLUMNS)
-    return OutlookResponse(**provenance_fields(region_id, store, cfg, df), data=data)
+    return OutlookResponse(**provenance_fields(region_id, store, cfg, df, run_ts), data=data)
