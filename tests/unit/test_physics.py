@@ -60,3 +60,59 @@ def test_hot_air_gives_a_lower_density_corrected_wind_speed():
     cool, hot = out["ws_density_corrected_ms"]
     assert hot < cool
     assert out["air_density_kgm3"].iloc[1] < out["air_density_kgm3"].iloc[0]
+
+
+def test_a_tracker_is_not_modelled_as_a_flat_panel():
+    """`tracking` was a declared archetype field nothing read, which was
+    invisible while every Belgian archetype was `fixed`. India's fleet is half
+    single-axis trackers whose nameplate tilt is 0 degrees, so reading it as a
+    fixed array models a horizontal panel and loses exactly the morning and
+    evening output a tracker exists to capture."""
+    import numpy as np
+    import pandas as pd
+
+    from src.core.config import Archetype, SiteMaster
+    from src.features.solar import solar_features
+
+    idx = pd.date_range("2026-06-21", periods=24, freq="h", tz="UTC")
+    ramp = np.clip(np.sin((np.arange(24) - 6) / 12 * np.pi), 0, None)
+    wx = pd.DataFrame(
+        {
+            "ghi_wm2": 900 * ramp,
+            "dni_wm2": 700 * ramp,
+            "dhi_wm2": 200 * ramp,
+            "temperature_2m_c": 30.0,
+            "wind_speed_10m_ms": 3.0,
+        },
+        index=idx,
+    )
+
+    def day_mwh(tracking, tilt):
+        a = Archetype(
+            id="x",
+            share=1.0,
+            tilt=tilt,
+            azimuth=180,
+            tracking=tracking,
+            dc_ac_ratio=1.3,
+            gamma_pdc=-0.004,
+            albedo=0.25,
+        )
+        site = SiteMaster(
+            site_id="s",
+            region_id="IN",
+            tech="solar",
+            lat=24.0,
+            lon=78.0,
+            capacity_mw=100,
+            capacity_share=1.0,
+            archetype=a,
+        )
+        return float(solar_features(wx, site).physics_pac_mw.sum())
+
+    flat = day_mwh("fixed", 0)
+    tracked = day_mwh("single_axis", 0)
+    assert tracked > flat * 1.1, "a tracker must beat the flat panel it would otherwise be"
+
+    with pytest.raises(ValueError, match="unknown tracking mode"):
+        day_mwh("dual_axis", 0)

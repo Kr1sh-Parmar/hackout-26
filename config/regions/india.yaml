@@ -1,0 +1,120 @@
+# India -- the TRANSFER region. Read the next paragraph before quoting anything
+# from this file.
+#
+# India proves the pipeline MOVES, never that it is accurate. Indian open data
+# publishes no metered, solar/wind-separated regional generation series that
+# overlaps the lead-stratified NWP archive: `silver/india_modelled_hourly` is
+# MODELLED (not metered), it is a single `combined` series that cannot be split
+# into solar and wind, and it ends 2022-10-31 -- two and a half years before the
+# 2024-03 start of the previous-runs weather. There is therefore NO label to
+# train a residual model on, NO label to calibrate a conformal band against, and
+# NO way to compute an honest error bar. This region runs PHYSICS ONLY, every
+# response carries `calibrated: false`, and no accuracy number may be quoted for
+# it. What it demonstrates is that a new region is a YAML file: same ingest, same
+# physics, same decision engine, same API, zero new code.
+#
+# HOW FAR OFF IS PHYSICS ALONE? The one Indian observation that exists is POSOCO
+# daily national energy (silver/india_posoco_daily, ends 2022-10-31) against the
+# installed capacity of the same month (silver/india_installed_by_date):
+#
+#   September 2022, national   solar  260 GWh/day on 60.8 GW  ->  daily CF 0.178
+#                              wind   158 GWh/day on 41.7 GW  ->  daily CF 0.158
+#   This config, physics only, live run 2026-09-12
+#                              solar  daily CF 0.276  (1.55x the observation)
+#                              wind   daily CF 0.025  (0.16x the observation)
+#
+# Different years, and the mapped fleet is not the national one, so treat these
+# as orders of magnitude rather than an error bar. They still say the useful
+# thing: without labels, physics alone over-predicts solar (no soiling,
+# availability or fleet-loss stack -- Belgium learns all of that in the residual
+# model) and badly under-predicts wind. The leading suspect for wind is the
+# shared grid above: India's wind sits on coasts and ridgelines that eight
+# 2-degree centroids weighted by TOTAL capacity do not sample. This is the
+# measurement that says why a transfer region is not an accuracy claim.
+
+region_id: IN
+physics_only: true   # see the header -- no Indian label exists to fit or calibrate against
+timezone: Asia/Kolkata
+resolution_min: 15
+
+# [MEASURED] from silver/india_gridded_capacity (Zenodo gridded fleet map),
+# summed over the 188 mapped cells. Not the national installed total -- it is
+# what the map covers, and it is what the capacity factors here normalise by.
+capacity_mw:
+  solar: 33201.3
+  wind: 37500.9
+
+# [DERIVED] the eight highest-capacity 2-degree cells of that map, each placed at
+# its capacity-weighted centroid, weights renormalised to 1.0.
+#
+# These eight cover 58.9% of the mapped fleet, against Belgium's five covering
+# nearly all of it: India's fleet is spread across a subcontinent, so a handful
+# of points is a much coarser summary of the weather than it is for Belgium.
+# ponytail: one shared grid for both technologies, as the schema has. It is a
+# real approximation here -- tamil_nadu is 98% wind and rajasthan_w is mostly
+# wind, while the solar fleet sits further north -- so a per-tech grid is the
+# upgrade if India ever gets labels worth fitting to.
+weather_grid:
+  - {id: karnataka_s,    lat: 12.02, lon: 76.99, weight: 0.1698}  # 7.1 GW
+  - {id: karnataka_n,    lat: 16.13, lon: 75.91, weight: 0.1656}  # 6.9 GW
+  - {id: andhra,         lat: 15.56, lon: 78.00, weight: 0.1642}  # 6.8 GW
+  - {id: tamil_nadu,     lat:  8.97, lon: 78.00, weight: 0.1215}  # 5.1 GW
+  - {id: madhya_pradesh, lat: 24.01, lon: 78.00, weight: 0.1143}  # 4.8 GW
+  - {id: rajasthan_w,    lat: 27.13, lon: 71.26, weight: 0.1006}  # 4.2 GW
+  - {id: kutch,          lat: 23.50, lon: 70.00, weight: 0.0876}  # 3.6 GW
+  - {id: gujarat_n,      lat: 23.44, lon: 71.99, weight: 0.0764}  # 3.2 GW
+
+nwp_models: [ecmwf_ifs025, icon_seamless, gfs_seamless]
+
+archetypes:
+  solar:
+    # [ASSUMED] -- stated assumptions, NOT a fit. Belgium's shares came from
+    # fit_shares() against metered clear-sky output; there is no Indian label to
+    # fit against, so these are priors from the published fleet mix: utility
+    # scale dominates, single-axis tracking is now standard on new-build, and
+    # rooftop is a small minority. Soiling is non-zero and seasonal in India,
+    # unlike Belgium, and is the single largest physics difference between the
+    # two regions.
+    - {id: utility_tracker,   tilt: 0,  azimuth: 180, share: 0.50,
+       tracking: single_axis, dc_ac_ratio: 1.30, gamma_pdc: -0.0040, albedo: 0.25,
+       soiling_pct_per_day: 0.15}
+    - {id: utility_fixed,     tilt: 25, azimuth: 180, share: 0.38,
+       tracking: fixed, dc_ac_ratio: 1.25, gamma_pdc: -0.0040, albedo: 0.25,
+       soiling_pct_per_day: 0.15}
+    - {id: rooftop,           tilt: 15, azimuth: 180, share: 0.12,
+       tracking: fixed, dc_ac_ratio: 1.15, gamma_pdc: -0.0038, albedo: 0.20,
+       soiling_pct_per_day: 0.10}
+  wind:
+    # [ASSUMED] India's fleet is entirely onshore, and older than Belgium's:
+    # lower hub heights, smaller rotors, and a long tail of sub-2 MW machines
+    # still in service. Split as an older and a current-generation class.
+    - {id: onshore_legacy,  share: 0.55, hub_height_m:  80, rotor_diameter_m:  90,
+       cut_in_ms: 3.5, rated_ms: 13, cut_out_ms: 25,
+       shear_alpha: 0.20, wake_loss_frac: 0.09}
+    - {id: onshore_modern,  share: 0.45, hub_height_m: 120, rotor_diameter_m: 140,
+       cut_in_ms: 3.0, rated_ms: 12, cut_out_ms: 25,
+       shear_alpha: 0.18, wake_loss_frac: 0.08}
+
+decision_thresholds:
+  # [ASSUMED] scaled from Belgium's measured thresholds by the capacity ratio
+  # (70.7 GW vs 18.1 GW, ~3.9x). Belgium's 1200 MW/h was MEASURED as the p95 of
+  # its own net-load ramp; nothing equivalent has been measured here, so these
+  # are placeholders that would need a real net-load series before any Indian
+  # alert count means anything.
+  ramp_limit_mw_per_h: 4700
+  band_limit_frac: 0.35
+  must_run_mw: 11000
+
+storage:
+  energy_capacity_mwh: 1500
+  power_rating_mw: 400
+  round_trip_efficiency: 0.88
+  soc_min_frac: 0.10
+  soc_max_frac: 0.95
+  degradation_per_cycle: 0.00003
+  response_time_min: 5
+
+prices:
+  # [ASSUMED] INR. Stated assumptions, not claimed market data.
+  curtailment_opportunity_cost_per_mwh: 3000
+  backup_fuel_cost_per_mwh: 6500

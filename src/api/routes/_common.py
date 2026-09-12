@@ -6,6 +6,7 @@ import datetime as dt
 import pathlib
 
 import pandas as pd
+import structlog
 import yaml
 
 from ...core.config import RegionConfig, load_region
@@ -14,6 +15,8 @@ from ..deps import get_settings
 from ..errors import ForecastUnavailable, RegionNotConfigured, StaleForecast
 
 REGION_DIR = pathlib.Path("config/regions")
+
+log = structlog.get_logger(__name__)
 
 
 def list_region_ids() -> list[str]:
@@ -74,6 +77,14 @@ def _age_minutes(latest: dt.datetime | None) -> float | None:
 def provenance_fields(
     region_id: str, store, cfg: RegionConfig, df: pd.DataFrame | None = None
 ) -> dict:
+    """Provenance for one response -- and the one structured log line per served
+    request (dev-01 12).
+
+    Logged from here rather than from a middleware because this is the only
+    point where all three identifiers exist at once: a middleware sees the URL
+    but has no idea which model version answered it, which is the field you
+    actually need after a bad forecast.
+    """
     # In replay, `issued_at` must be the SNAPSHOT's run, not whatever happens to
     # sit in data/gold -- otherwise the screen shows a timestamp belonging to
     # data nobody is looking at.
@@ -87,7 +98,7 @@ def provenance_fields(
             model_version = str(df["model_version"].iloc[0])
         if "calibration_date" in df.columns:
             calibration_date = str(df["calibration_date"].iloc[0])
-    return {
+    fields = {
         "region_id": region_id,
         "issued_at": issued_at,
         "model_version": model_version,
@@ -98,6 +109,15 @@ def provenance_fields(
         # Age is a property of the answer, not only a reason to withhold it.
         "age_minutes": _age_minutes(latest),
     }
+    log.info(
+        "served",
+        region_id=region_id,
+        run_ts=issued_at.isoformat() if hasattr(issued_at, "isoformat") else str(issued_at),
+        model_version=model_version,
+        replay_mode=fields["replay_mode"],
+        rows=0 if df is None else int(len(df)),
+    )
+    return fields
 
 
 def records(df: pd.DataFrame, columns: list[str]) -> list[dict]:

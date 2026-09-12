@@ -125,25 +125,21 @@ class ParquetStore:
         extra_sql += " ORDER BY valid_ts_utc, tech, rank"
         return self._read_run("explain", region_id, run_ts, extra_sql, params)
 
-    def read_backtest(
-        self,
-        region_id: str,
-        tech: str,
-        window_start: dt.datetime | pd.Timestamp | None = None,
-        window_end: dt.datetime | pd.Timestamp | None = None,
+    def read_drift(
+        self, region_id: str, run_ts: dt.datetime | pd.Timestamp | None = None
     ) -> pd.DataFrame:
+        """The retrain verdict from the latest cycle. Empty until one has run."""
+        return self._read_run("drift", region_id, run_ts)
+
+    def read_backtest(self, region_id: str, tech: str) -> pd.DataFrame:
+        """Per-lead-hour accuracy. One row per lead hour, aggregated over every
+        walk-forward fold -- there is no `valid_ts_utc` here and so no time
+        window to filter by; see `api.routes.backtest`.
+        """
         if not self._exists("gold", "backtest"):
             return pd.DataFrame()
-        pattern = self._glob("gold", "backtest")
         sql = "SELECT * FROM read_parquet(?, hive_partitioning=1) WHERE region_id = ? AND tech = ?"
-        params: list = [pattern, region_id, tech]
-        if window_start is not None:
-            sql += " AND valid_ts_utc >= ?"
-            params.append(pd.Timestamp(window_start))
-        if window_end is not None:
-            sql += " AND valid_ts_utc <= ?"
-            params.append(pd.Timestamp(window_end))
-        return self._query(sql, params)
+        return self._query(sql, [self._glob("gold", "backtest"), region_id, tech])
 
     def latest_run(self, region_id: str) -> dt.datetime | None:
         for name in ("forecast", "outlook"):

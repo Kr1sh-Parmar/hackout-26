@@ -37,7 +37,11 @@ from src.features.build import build_all_features  # noqa: E402
 from src.models import deep_seq  # noqa: E402
 from src.models.physics import physics_forecast  # noqa: E402
 from src.models.residual_gbdt import design_matrix, predict_residual, train_residual  # noqa: E402
-from src.uncertainty.conformal import SplitConformal, calibration_mask  # noqa: E402
+from src.uncertainty.conformal import (  # noqa: E402
+    SplitConformal,
+    calibration_mask,
+    conditioning_buckets,
+)
 
 GOLD = "data/gold/training_base_24_72h/part-0.parquet"
 WEATHER = "data/silver/weather_nwp"
@@ -62,18 +66,23 @@ def prep(cfg, tech, part, actuals):
     return x, phys, y
 
 
-def conformalise(fold, tech, cal_band, y_c, cap, te, lo, hi):
-    """Byte-identical to `scripts/backtest.py:51-56`, just called three times."""
+def conformalise(fold, tech, cal_band, y_c, cap, te, lo, hi, x_c=None, x_te=None):
+    """Byte-identical to `scripts/backtest.py`'s calibration block, called three
+    times. `x_c`/`x_te` carry the conditioning buckets; without them the rung-5
+    cross-check would calibrate differently from the harness it must reproduce."""
     if len(fold.calibrate) <= 200:
         return lo, hi
     cmask = calibration_mask(fold.calibrate, tech)
+    cond_c = conditioning_buckets(x_c, tech) if x_c is not None else None
     conformal = SplitConformal(alpha=ALPHA).calibrate(
         cal_band["p10_mw"].to_numpy(dtype=float)[cmask],
         cal_band["p90_mw"].to_numpy(dtype=float)[cmask],
         (y_c * cap)[cmask],
         fold.calibrate["lead_hours"].to_numpy(dtype=float)[cmask],
+        None if cond_c is None else cond_c[cmask],
     )
-    return conformal.apply(lo, hi, te["lead_hours"].to_numpy(dtype=float))
+    cond_t = conditioning_buckets(x_te, tech) if x_te is not None else None
+    return conformal.apply(lo, hi, te["lead_hours"].to_numpy(dtype=float), cond_t)
 
 
 def preds_frame(te, tech, y_te, cap, p50, lo, hi, phys_te, actual_cf):
@@ -120,6 +129,8 @@ def fold_rungs(cfg, tech, fold, actuals, cap, table, meta, ablate):
         te,
         b_te["p10_mw"].to_numpy(float),
         b_te["p90_mw"].to_numpy(float),
+        built["calibrate"][0],
+        built["test"][0],
     )
     out = {
         "rung5": preds_frame(
@@ -199,6 +210,8 @@ def fold_rungs(cfg, tech, fold, actuals, cap, table, meta, ablate):
             te,
             d_te["p10_mw"].to_numpy(float),
             d_te["p90_mw"].to_numpy(float),
+            built["calibrate"][0],
+            built["test"][0],
         )
         out[name] = preds_frame(
             te, tech, y_te, cap, d_te["p50_mw"].to_numpy(float), lo, hi, phys_te, actual_cf

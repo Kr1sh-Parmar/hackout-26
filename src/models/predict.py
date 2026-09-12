@@ -22,7 +22,10 @@ from ..core.config import get_settings, load_region
 from ..features.build import build_all_features
 from ..models.physics import physics_forecast
 from ..models.registry import load_model
+from ..quality.schemas import training_matrix_schema
+from ..quality.validators import validate
 from ..models.residual_gbdt import predict_residual
+from ..uncertainty.conformal import conditioning_buckets
 
 # Below this lead the residual model has never seen a training row: the gold
 # table is `training_base_24_72h` and excludes the day0 vintage entirely. Serve
@@ -95,10 +98,12 @@ def predict(
 
     frames = []
     for tech in sorted(cfg.capacity_mw):
-        try:
-            artifact = load_model(region_id, tech)
-        except FileNotFoundError as exc:
-            raise RuntimeError(f"no model registered for {region_id}/{tech}") from exc
+        artifact = None
+        if not cfg.physics_only:
+            try:
+                artifact = load_model(region_id, tech)
+            except FileNotFoundError as exc:
+                raise RuntimeError(f"no model registered for {region_id}/{tech}") from exc
         frames.append(_forecast_tech(cfg, tech, wx, artifact, quantiles))
 
     if not frames:
@@ -127,20 +132,36 @@ def load_actuals(region_id: str, tech: str) -> pd.DataFrame | None:
 
 def _forecast_tech(cfg, tech, wx, artifact, quantiles) -> pd.DataFrame:
     x = build_all_features(cfg.region_id, wx, actuals=load_actuals(cfg.region_id, tech), tech=tech)
+    # strict=True here, unlike the ingest boundary: these rows are the output of
+    # a PURE function on already-validated weather, so a violation is a bug in
+    # the feature builder rather than a bad hour from a provider, and serving
+    # around it would hide the one failure this contract exists to surface.
+    # Cheap -- a cycle builds ~72 rows, not the 45k a backtest fold does, which
+    # is why this sits here and not inside `build_all_features`.
+    validate(x, training_matrix_schema, f"features/{tech}", strict=True)
     physics_cf = physics_forecast(cfg, wx, tech).to_numpy(dtype=float)
     capacity = float(cfg.capacity_mw[tech])
     lead = x["lead_hours"].to_numpy(dtype=float)
-    meta = artifact.get("meta", {})
 
-    bands = predict_residual(artifact["models"], x, physics_cf, capacity)
-    lo = bands["p10_mw"].to_numpy(dtype=float)
-    mid = bands["p50_mw"].to_numpy(dtype=float)
-    hi = bands["p90_mw"].to_numpy(dtype=float)
+    if artifact is None:
+        # A `physics_only` region (see RegionConfig): no labels exist, so there
+        # is no residual model and no calibrated band. Everything falls through
+        # the same untrained branch the sub-24 h leads already use, and the row
+        # says `calibrated: false` -- the forecast is served, the claim is not.
+        meta, conformal = {"model_version": "physics-only"}, None
+        trained = np.zeros(len(x), dtype=bool)
+        lo = mid = hi = np.zeros(len(x), dtype=float)
+    else:
+        meta = artifact.get("meta", {})
+        bands = predict_residual(artifact["models"], x, physics_cf, capacity)
+        lo = bands["p10_mw"].to_numpy(dtype=float)
+        mid = bands["p50_mw"].to_numpy(dtype=float)
+        hi = bands["p90_mw"].to_numpy(dtype=float)
+        conformal = artifact.get("conformal")
+        trained = lead >= MIN_TRAINED_LEAD_H
 
-    conformal = artifact.get("conformal")
-    trained = lead >= MIN_TRAINED_LEAD_H
     if conformal is not None:
-        clo, chi = conformal.apply(lo, hi, np.clip(lead, 0, None))
+        clo, chi = conformal.apply(lo, hi, np.clip(lead, 0, None), conditioning_buckets(x, tech))
         lo, hi = np.where(trained, clo, lo), np.where(trained, chi, hi)
 
     # Physics only below the trained band -- no residual, no calibration claim.

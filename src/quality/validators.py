@@ -23,10 +23,15 @@ def validate(df: pd.DataFrame, schema, name: str, strict: bool = True) -> pd.Dat
             returns `df` with the failing rows dropped.
 
     Returns:
-        The validated (and, if strict=False, cleaned) frame.
+        The caller's frame -- with the failing rows dropped when strict=False,
+        and otherwise unchanged. Deliberately NOT pandera's return value: these
+        schemas are `strict="filter"`, so validating and writing the result
+        would silently strip every undeclared column from the table on its way
+        to disk. The schema is a CHECK on the data, not a projection of it.
     """
     try:
-        return schema.validate(df, lazy=True)
+        schema.validate(df, lazy=True)
+        return df
     except SchemaErrors as exc:
         cases = exc.failure_cases
         logger.warning(

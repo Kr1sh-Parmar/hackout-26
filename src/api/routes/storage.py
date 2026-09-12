@@ -1,5 +1,9 @@
 """Live storage-capacity sweep -- not a gold table, computed on request
-against whatever outlook is currently available."""
+against whatever outlook is currently available.
+
+The sweep is computed here, but its INPUT goes through the replay switch like
+every other operational route: reading the store directly would have served a
+sizing curve off live gold while the rest of the screen showed replayed data."""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 
 from ...core.store import ParquetStore
 from ...decisions.storage_sim import sweep
+from ...ingest.replay import read_table
 from ..deps import get_store
 from ..schemas import SweepResponse
 from ._common import provenance_fields, records, resolve_region
@@ -22,7 +27,7 @@ def get_storage_sweep(
     store: ParquetStore = Depends(get_store),
 ) -> SweepResponse:
     cfg = resolve_region(region_id)
-    outlook = store.read_outlook(region_id)
+    outlook = read_table(region_id, "outlook", store)
     if outlook.empty:
         data = []
     else:

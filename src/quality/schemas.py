@@ -80,23 +80,43 @@ generation_schema = DataFrameSchema(
         "tech": Column(str),
         # nullable: qc_flag=MISSING rows (and a handful of un-backfilled
         # monitored_capacity_mw rows) genuinely have no reading -- verified
-        # against the real silver file. The `>= 0` check stays strict: small
-        # negative readings do occur (self-consumption noise) and are exactly
-        # what validate(..., strict=False) is for -- drop them, don't allow them.
-        "power_mw": Column(float, Check.ge(0), nullable=True),
+        # against the real silver file.
+        #
+        # No `>= 0` check. A turbine at zero wind DRAWS power -- yaw motors,
+        # blade heating, controller -- so a small negative reading is a real
+        # measurement, not corruption. Measured on the built data: 452 of
+        # 129,504 wind rows are negative, the worst is -0.45% of capacity, and
+        # the ingest pipeline has ALREADY flagged every one of them
+        # `OUT_OF_RANGE`. Rejecting them would delete rows the pipeline
+        # deliberately marked, throwing away its own quality signal and
+        # punching holes in a 15-minute series that downstream resampling then
+        # fills differently. The dataframe check below still catches the
+        # failure that matters -- a sign flip or a unit error on the whole feed.
+        "power_mw": Column(float, nullable=True),
         "monitored_capacity_mw": Column(float, Check.gt(0), nullable=True),
         "load_factor": Column(float, nullable=True, required=False),
         "curtailed_mw": Column(float, nullable=True, required=False),
         "availability_pct": Column(float, nullable=True, required=False),
         "qc_flag": Column(str, Check.isin(QC_FLAGS)),
     },
-    checks=Check(
-        lambda df: (df["power_mw"] <= df["monitored_capacity_mw"] * 1.05)
-        | df["power_mw"].isna()
-        | df["monitored_capacity_mw"].isna(),
-        element_wise=False,
-        error="power_mw exceeds monitored_capacity_mw by more than 5%",
-    ),
+    checks=[
+        Check(
+            lambda df: (df["power_mw"] <= df["monitored_capacity_mw"] * 1.05)
+            | df["power_mw"].isna()
+            | df["monitored_capacity_mw"].isna(),
+            element_wise=False,
+            error="power_mw exceeds monitored_capacity_mw by more than 5%",
+        ),
+        # Parasitic draw is real and small; anything below -2% of the monitored
+        # fleet is a broken feed, not a turbine keeping itself warm.
+        Check(
+            lambda df: (df["power_mw"] >= -0.02 * df["monitored_capacity_mw"])
+            | df["power_mw"].isna()
+            | df["monitored_capacity_mw"].isna(),
+            element_wise=False,
+            error="power_mw is more than 2% of capacity NEGATIVE -- sign flip or unit error",
+        ),
+    ],
     unique=["region_id", "ts_utc", "tech"],
     strict="filter",
     coerce=True,
@@ -119,4 +139,22 @@ training_matrix_schema = DataFrameSchema(
     coerce=True,
 )
 
-__all__ = ["weather_nwp_schema", "generation_schema", "training_matrix_schema"]
+# Which contract governs which written table. Owned here rather than by each
+# writer, so a new silver table gets validated by adding one line next to the
+# schema instead of remembering to call the validator from a build script.
+#
+# `generation_actuals_wind_segment` is absent on purpose: it is keyed by
+# (region, ts, offshore/onshore) and carries no `tech` column, so it is a
+# different table that happens to have a similar name.
+SCHEMA_FOR_TABLE = {
+    "weather_nwp": weather_nwp_schema,
+    "generation_actuals_solar": generation_schema,
+    "generation_actuals_wind": generation_schema,
+}
+
+__all__ = [
+    "SCHEMA_FOR_TABLE",
+    "generation_schema",
+    "training_matrix_schema",
+    "weather_nwp_schema",
+]

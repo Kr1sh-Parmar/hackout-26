@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 from src.core.config import get_settings
-from src.ingest.replay import TABLES, load_replay, read_table, snapshot
+from src.ingest.replay import STATIC_TABLES, TABLES, load_replay, read_table, snapshot
 
 REGION = "BE"
 RUN_TS = pd.Timestamp("2026-09-09T00:00:00Z")
@@ -31,6 +31,7 @@ def _contract_row(table: str, run_ts: pd.Timestamp) -> dict:
     grows a field this fixture follows it instead of quietly under-filling.
     """
     from src.decisions.events import EVENT_COLUMNS
+    from src.evaluation.drift import DRIFT_COLUMNS
     from src.decisions.net_load import OUTLOOK_COLUMNS
     from src.decisions.recommend import Action, Flag, RECOMMEND_COLUMNS
     from src.models.explain import EXPLAIN_COLUMNS
@@ -42,6 +43,7 @@ def _contract_row(table: str, run_ts: pd.Timestamp) -> dict:
         "events": EVENT_COLUMNS,
         "actions": RECOMMEND_COLUMNS,
         "explain": EXPLAIN_COLUMNS,
+        "drift": DRIFT_COLUMNS,
     }[table]
 
     row: dict = {"region_id": REGION, "run_ts_utc": run_ts}
@@ -66,8 +68,10 @@ def _contract_row(table: str, run_ts: pd.Timestamp) -> dict:
             row[col] = "x"
         elif col in ("description", "rationale", "model_version", "calibration_date"):
             row[col] = "x"
-        elif col == "calibrated":
+        elif col in ("calibrated", "retrain"):
             row[col] = True
+        elif col in ("reason", "drifted_features"):
+            row[col] = "x"
         else:
             row[col] = 0.0
     return row
@@ -77,6 +81,23 @@ def _write_contract_gold(gold_root, table: str, run_ts: pd.Timestamp) -> None:
     dest = gold_root / table / f"region_id={REGION}" / f"run_date={run_ts:%Y-%m-%d}"
     dest.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([_contract_row(table, run_ts)]).to_parquet(dest / "part-0.parquet", index=False)
+
+
+def _write_backtest_gold(gold_root) -> None:
+    """`backtest` is not partitioned by run -- flat files, one per tech, exactly
+    as `scripts/backtest.py` writes them."""
+    dest = gold_root / "backtest"
+    dest.mkdir(parents=True, exist_ok=True)
+    for tech in ("solar", "wind"):
+        pd.DataFrame(
+            {
+                "lead_hours": [24, 48],
+                "nrmse_model": [0.05, 0.06],
+                "picp_80": [0.79, 0.80],
+                "region_id": [REGION, REGION],
+                "tech": [tech, tech],
+            }
+        ).to_parquet(dest / f"region_id={REGION}_tech={tech}.parquet", index=False)
 
 
 class _NetworkTouchingStore:
@@ -112,11 +133,12 @@ def test_snapshot_and_replay_round_trip(tmp_path, monkeypatch, blocked_network):
     settings = get_settings()
     assert settings.replay_mode is True
 
+    _write_backtest_gold(gold_root)
     written = snapshot(REGION, RUN_TS, gold_root=gold_root, settings=settings)
-    assert set(written) == set(TABLES)
+    assert set(written) == set(TABLES) | set(STATIC_TABLES)
 
     store = _NetworkTouchingStore()
-    for table in TABLES:
+    for table in TABLES + STATIC_TABLES:
         df = read_table(REGION, table, store)
         assert not df.empty
         assert df["region_id"].iloc[0] == REGION
@@ -160,6 +182,7 @@ def test_api_serves_the_snapshot_when_gold_is_gone(tmp_path, monkeypatch):
     gold_root = tmp_path / "gold"
     for table in TABLES:
         _write_contract_gold(gold_root, table, RUN_TS)
+    _write_backtest_gold(gold_root)
 
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path / "artifacts"))
     monkeypatch.setenv("REPLAY_MODE", "true")
@@ -169,8 +192,21 @@ def test_api_serves_the_snapshot_when_gold_is_gone(tmp_path, monkeypatch):
     try:
         snapshot(REGION, RUN_TS, gold_root=gold_root, settings=get_settings())
         client = TestClient(app)
-        for path in ("/forecast", "/outlook", "/events", "/actions", "/explain"):
-            r = client.get(path, params={"region_id": REGION})
+        # /storage/sweep and /backtest are in this list on purpose: they were the
+        # last two routes reading the store directly, so with gold gone they
+        # returned an empty payload -- a demo showing a forecast beside a blank
+        # accuracy panel and a flat sizing curve, with no error to explain it.
+        paths = [
+            ("/forecast", {}),
+            ("/outlook", {}),
+            ("/events", {}),
+            ("/actions", {}),
+            ("/explain", {}),
+            ("/storage/sweep", {}),
+            ("/backtest", {"tech": "solar"}),
+        ]
+        for path, extra in paths:
+            r = client.get(path, params={"region_id": REGION, **extra})
             assert r.status_code == 200, f"{path} -> {r.status_code}: {r.text}"
             body = r.json()
             assert body["replay_mode"] is True, path

@@ -17,6 +17,8 @@ from __future__ import annotations
 import pandas as pd
 
 from ..core.config import RegionConfig
+from ..quality.schemas import weather_nwp_schema
+from ..quality.validators import validate
 from .adapters.openmeteo import fetch_region
 from .regional import regionalise
 
@@ -57,6 +59,14 @@ def live_weather_with_points(
         (raw["valid_ts_utc"] - raw["run_ts_utc"]).dt.total_seconds().div(3600).round().astype(int)
     )
     raw = raw[raw["lead_hours"].between(1, horizon_hours)]
+
+    # The provider boundary. A live fetch is the one input nobody reviewed
+    # before it reached the model, so the same contract the silver tables are
+    # built against is applied to it here -- strict=False, because dropping a
+    # bad hour and serving the rest beats refusing to forecast at all. Without
+    # this, an Open-Meteo unit change or a renamed field arrives as a plausible
+    # forecast rather than as an error.
+    raw = validate(raw, weather_nwp_schema, "live_weather", strict=False)
 
     wide = regionalise(raw)
     wide["region_id"] = cfg.region_id

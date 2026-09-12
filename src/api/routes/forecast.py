@@ -34,6 +34,15 @@ def get_forecast(
     )
     data = records(
         df,
-        ["valid_ts_utc", "lead_hours", "tech", "p10_mw", "p50_mw", "p90_mw", "capacity_mw"],
+        [
+            "valid_ts_utc",
+            "lead_hours",
+            "tech",
+            "p10_mw",
+            "p50_mw",
+            "p90_mw",
+            "capacity_mw",
+            "calibrated",
+        ],
     )
     return ForecastResponse(**provenance_fields(region_id, store, cfg, df), data=data)

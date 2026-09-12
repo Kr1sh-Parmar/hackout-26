@@ -37,6 +37,24 @@ BAD_QC_FLAGS = {"MISSING", "FROZEN", "OUT_OF_RANGE", "CURTAILED"}
 LOW_AVAILABILITY_PCT = 90.0
 
 
+def curtailment_flag(bid_id: pd.Series) -> pd.Series:
+    """Wind curtailment from Elia's `decrementalbidid` column.
+
+    Lived inline in `scripts/build_elia.py` as a chain of six string calls,
+    which is why the trap it defuses went unnoticed once already and could not
+    be tested at all.
+
+    The trap: the column is 100% NON-NULL and ~99.2% empty, because Elia's CSV
+    export writes an empty text field as the two-character string `''` -- two
+    apostrophes -- rather than as an empty field or a null. A `.notna()` test
+    therefore flags 99.6% of the wind fleet as curtailed, against a real rate of
+    2.96%, and every downstream sample weight is wrong in a way that looks
+    plausible. Strip the quotes before testing for emptiness.
+    """
+    cleaned = bid_id.fillna("").astype(str).str.strip().str.strip("'\"").str.strip()
+    return cleaned.ne("")
+
+
 def detect_curtailment(
     actual_mw: pd.Series,
     physics_mw: pd.Series,

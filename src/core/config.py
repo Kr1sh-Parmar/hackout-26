@@ -89,6 +89,12 @@ class RegionConfig(BaseModel):
     region_id: str
     timezone: str
     resolution_min: int = 15
+    # A region with no metered, technology-separated generation series has
+    # nothing to fit a residual model to and nothing to calibrate a band
+    # against, so it is served from physics alone. Declared here rather than
+    # inferred from a missing artifact: "no model file" must stay a loud error
+    # for a region that is supposed to have one.
+    physics_only: bool = False
     capacity_mw: dict[str, float]  # {"solar": ..., "wind": ...}
     weather_grid: list[GridPoint]
     nwp_models: list[str]

@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# libgomp1 is LightGBM's OpenMP runtime. Without it the image builds cleanly and
+# then dies on `import lightgbm` at container start -- an error that never
+# appears on the host, which is where everyone looks first.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential libgomp1 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir -e .
+
+# config, data and artifacts are MOUNTED, not baked in: a region is a YAML file
+# and a model is an artifact, so neither should need an image rebuild.
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -29,6 +29,19 @@ import numpy as np
 MIN_CALIBRATION_POINTS = 30
 DEFAULT_BAND_HOURS = 12
 
+# Group keys stay plain ints -- `band * COND_STRIDE + bucket` -- so `q_hat` is
+# still an int-keyed dict and an artifact pickled before conditioning existed
+# unpickles and behaves exactly as it did.
+COND_STRIDE = 1000
+
+# The scaled score divides by the band width, so a near-zero band makes the
+# ratio explode. Measured: bucketing solar by elevation with a <10 degree bucket
+# produced a q_hat off dawn bands whose widths are a few MW, and applying it to
+# a midday band served an interval 425x installed capacity. Floor the divisor at
+# a fraction of the calibration set's own median width -- below that the band is
+# too small to normalise by and the additive behaviour is the safe one.
+SCALE_FLOOR_FRAC = 0.05
+
 
 class SplitConformal:
     """Finite-sample coverage for an interval that was only ever asymptotic.
@@ -67,6 +80,8 @@ class SplitConformal:
         self.band_hours = max(int(band_hours), 1)
         self.scaled = bool(scaled)
         self.q_hat: dict[int, float] = {}
+        self.scale_floor = 1e-6
+        self.conditioned = False
 
     def __setstate__(self, state: dict) -> None:
         """Unpickle artifacts written before `band_hours`/`scaled` existed.
@@ -81,39 +96,120 @@ class SplitConformal:
         self.__dict__.update(state)
         self.__dict__.setdefault("band_hours", 1)
         self.__dict__.setdefault("scaled", False)
+        self.__dict__.setdefault("scale_floor", 1e-6)
+        self.__dict__.setdefault("conditioned", False)
 
     def _band(self, lead_hours) -> np.ndarray:
         lead = np.asarray(lead_hours, dtype=float)
         return ((lead // self.band_hours) * self.band_hours).astype(int)
 
-    def calibrate(self, lo, hi, y, lead_hours) -> SplitConformal:
+    def _keys(self, lead_hours, cond=None) -> np.ndarray:
+        """Calibration group per row: the lead band, optionally crossed with a
+        caller-supplied conditioning bucket (see `calibrate`)."""
+        band = self._band(lead_hours)
+        if cond is None:
+            return band
+        c = np.asarray(cond, dtype=int)
+        if c.size and (c.min() < 0 or c.max() >= COND_STRIDE):
+            raise ValueError(
+                f"cond buckets must be in [0, {COND_STRIDE}); got {c.min()}..{c.max()}"
+            )
+        return band * COND_STRIDE + c
+
+    def calibrate(self, lo, hi, y, lead_hours, cond=None) -> SplitConformal:
+        """Fit one q_hat per calibration group.
+
+        `cond` is an optional per-row bucket crossed with the lead band -- for
+        solar, a solar-elevation bucket. Lead band alone answers "how far ahead
+        is this", which for a 00Z run is also "what time of day is this", but
+        only modulo 24: hours 25, 49 and 73 are all 01:00 and land in three
+        different bands. Crossing in an elevation bucket lets the correction
+        differ between dawn and midday WITHIN a band, which is where solar's
+        remaining conditional miscoverage lives.
+        """
         lo, hi, y = (np.asarray(v, dtype=float) for v in (lo, hi, y))
-        lead = self._band(lead_hours)
+        self.conditioned = cond is not None
+        lead = self._keys(lead_hours, cond)
         s = np.maximum(lo - y, y - hi)
         if self.scaled:
+            width = hi - lo
+            finite = width[np.isfinite(width)]
+            self.scale_floor = max(
+                float(SCALE_FLOOR_FRAC * np.median(finite)) if finite.size else 0.0, 1e-6
+            )
             # a RATIO of the band, so the correction inherits the quantile
             # model's own condition-dependent width instead of flattening it
-            s = s / np.maximum(hi - lo, 1e-6)
+            s = s / np.maximum(width, self.scale_floor)
 
-        for lead_h in np.unique(lead):
-            sel = s[(lead == lead_h) & np.isfinite(s)]
+        for key in np.unique(lead):
+            sel = s[(lead == key) & np.isfinite(s)]
             n = sel.size
             if n < MIN_CALIBRATION_POINTS:
                 # Too few points to make a finite-sample claim. Widening by a
                 # number we cannot justify is worse than not widening.
-                self.q_hat[int(lead_h)] = 0.0
+                self.q_hat[int(key)] = 0.0
                 continue
             k = min(math.ceil((n + 1) * (1 - self.alpha)), n)
-            self.q_hat[int(lead_h)] = float(np.sort(sel)[k - 1])
+            self.q_hat[int(key)] = float(np.sort(sel)[k - 1])
         return self
 
-    def apply(self, lo, hi, lead_hours):
+    def apply(self, lo, hi, lead_hours, cond=None):
+        """Widen the band. `cond` must match what `calibrate` was given.
+
+        Mismatching it is a SILENT failure, not a loud one: the group keys simply
+        miss, every `q_hat` lookup falls back to 0.0, and the caller is handed an
+        uncalibrated band that still says `calibrated=True`. So a conditioned
+        calibrator refuses to apply without buckets, and an unconditioned one
+        ignores buckets it never fitted rather than looking up keys it lacks.
+        """
         lo = np.asarray(lo, dtype=float)
         hi = np.asarray(hi, dtype=float)
-        q = np.array([self.q_hat.get(int(h), 0.0) for h in self._band(lead_hours)], dtype=float)
+        if self.conditioned and cond is None:
+            raise ValueError(
+                "this calibrator was fitted with conditioning buckets; applying it without "
+                "them would silently return an uncalibrated band"
+            )
+        if not self.conditioned:
+            cond = None
+        keys = self._keys(lead_hours, cond)
+        q = np.array([self.q_hat.get(int(k), 0.0) for k in keys], dtype=float)
         if self.scaled:
-            q = q * np.maximum(hi - lo, 1e-6)
+            q = q * np.maximum(hi - lo, self.scale_floor)
         return lo - q, hi + q
+
+
+# Solar error is heteroscedastic WITHIN the day, and the lead band only knows
+# about it modulo 24: hours 25, 49 and 73 are all 01:00 and sit in three
+# different bands. These edges cross an elevation bucket into the band so the
+# correction can differ between dawn and midday. Measured, 22 walk-forward
+# folds, solar daylight-only, against the 12h-band incumbent:
+#
+#     no conditioning        PICP 0.787  width 12.73%   9/34 hours in 0.78-0.82
+#     2 buckets (<20)        PICP 0.787  width 13.38%  11/34
+#     3 buckets (<15,35)     PICP 0.782  width 13.14%  12/34   <- adopted
+#     4 buckets (<10,25,40)  PICP 0.776  width 13.11%   9/34
+#
+# Mean |PICP_h - 0.80| across lead hours falls 0.0526 -> 0.0424, so both the
+# coarse count and the continuous measure agree. Four buckets over-splits: the
+# dawn bucket stops having enough points to estimate from. The cost is 0.41pp of
+# width, and the aggregate stays inside the 0.78-0.82 target.
+SOLAR_ELEVATION_EDGES: tuple[float, ...] = (15.0, 35.0)
+
+
+def conditioning_buckets(frame, tech: str):
+    """Per-row conformal conditioning bucket for `tech`, or None.
+
+    Pairs with `calibration_mask`: same module, same shape of decision, and the
+    caller passes the result of both into `calibrate`/`apply`. Wind gets None --
+    its coverage is already 37/49 lead hours in band and it has no within-day
+    structure of this kind to condition on.
+    """
+    import numpy as _np
+
+    if tech != "solar" or "solar_elevation_deg" not in getattr(frame, "columns", []):
+        return None
+    elev = frame["solar_elevation_deg"].to_numpy(dtype=float)
+    return _np.digitize(_np.nan_to_num(elev, nan=-90.0), SOLAR_ELEVATION_EDGES)
 
 
 def calibration_mask(frame, tech: str):

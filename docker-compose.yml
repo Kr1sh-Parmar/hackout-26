@@ -1,0 +1,35 @@
+# One service, deliberately.
+#
+# dev-05 §1 specifies four -- api, worker, redis, ui. Three of them describe
+# infrastructure this build does not have and does not need:
+#
+#   redis   the API is a read layer over parquet; its cache is an lru_cache on a
+#           DuckDB reader. A cache server in front of a memory-mapped columnar
+#           file is a second thing to run and a second thing to be wrong.
+#   worker  there is no APScheduler. `scripts/run_cycle.py` IS the scheduled job,
+#           invoked by cron or by hand; a container whose only purpose is to
+#           sleep between invocations is not an improvement on cron.
+#   ui      no frontend exists yet. When one does it belongs here as a build
+#           stage, not as a placeholder that fails `docker compose up` today.
+#
+# The dev file should be corrected to match, per the repo's own rule about
+# design docs and the build disagreeing.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports: ["8000:8000"]
+    env_file: .env
+    environment:
+      # Container-local paths; the host layout is mounted onto them below.
+      DATA_ROOT: /app/data
+      ARTIFACT_ROOT: /app/artifacts
+    volumes:
+      # Read-write: a cycle run inside the container writes gold here.
+      - ./data:/app/data
+      - ./artifacts:/app/artifacts
+      # Read-only: regions are configuration and nothing at runtime edits them.
+      - ./config:/app/config:ro
+    restart: unless-stopped

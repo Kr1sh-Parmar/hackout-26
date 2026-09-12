@@ -1,0 +1,15 @@
+# The image installs the package and mounts everything else. Copying the data
+# tree in would add gigabytes to a build that then ignores them.
+.git
+.github
+data
+artifacts
+notebooks
+context
+tests
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.hypothesis
+*.pyc
+.env

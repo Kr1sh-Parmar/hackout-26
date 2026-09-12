@@ -18,7 +18,12 @@ import pandas as pd
 
 from ..core.config import Settings, get_settings
 
-TABLES: tuple[str, ...] = ("forecast", "outlook", "events", "actions", "explain")
+# Tables written once per forecast cycle, partitioned by run.
+TABLES: tuple[str, ...] = ("forecast", "outlook", "events", "actions", "explain", "drift")
+# Tables that belong to the MODEL, not to a cycle: `backtest.py` rewrites them
+# per training run, and they carry no `run_ts_utc` to filter on. They still have
+# to be frozen, or an offline demo shows a forecast it cannot vouch for.
+STATIC_TABLES: tuple[str, ...] = ("backtest",)
 
 
 def _replay_root(region_id: str, settings: Settings | None = None) -> pathlib.Path:
@@ -56,6 +61,14 @@ def snapshot(
             df = df[pd.to_datetime(df["run_ts_utc"], utc=True) == run_ts]
         if df.empty:
             continue
+        df.to_parquet(dest / f"{table}.parquet", index=False)
+        written.append(table)
+
+    for table in STATIC_TABLES:
+        files = sorted((gold_root / table).glob(f"region_id={region_id}*.parquet"))
+        if not files:
+            continue
+        df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
         df.to_parquet(dest / f"{table}.parquet", index=False)
         written.append(table)
     return written

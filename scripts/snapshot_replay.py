@@ -24,6 +24,22 @@ GOLD = pathlib.Path("data/gold")
 
 
 def latest_run(region: str) -> pd.Timestamp:
+    """The newest run present in the tables this script actually freezes.
+
+    It used to read `training_base_24_72h` instead, which is the TRAINING
+    matrix: it ends wherever the last archive build did, so "latest available
+    run" resolved to a historical replay run and quietly snapshotted that while
+    a fresher live cycle sat in gold unfrozen. The demo then served a forecast
+    from whichever model produced the older run.
+    """
+    runs = []
+    for table in ("forecast", "outlook"):
+        part = GOLD / table / f"region_id={region}"
+        for f in part.glob("*/*.parquet"):
+            runs.append(pd.read_parquet(f, columns=["run_ts_utc"]).run_ts_utc.max())
+    if runs:
+        return pd.Timestamp(max(runs))
+    # nothing has run a cycle yet -- fall back to the newest weather we hold
     g = pd.read_parquet(
         GOLD / "training_base_24_72h" / "part-0.parquet", columns=["region_id", "run_ts_utc"]
     )

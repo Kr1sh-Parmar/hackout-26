@@ -37,6 +37,41 @@ SOLAR_COLUMNS = [
 # value. Clipping at 1.0 would erase a real high-output signal.
 KT_MAX = 1.3
 
+TRACKING_MODES = ("fixed", "single_axis")
+# Typical utility-scale horizontal single-axis tracker: +/-60 degrees of travel,
+# backtracking on, ground-cover ratio 0.35.
+TRACKER_MAX_ANGLE = 60.0
+TRACKER_GCR = 0.35
+
+
+def _orientation(a, sp: pd.DataFrame):
+    """Panel tilt and azimuth -- a constant for fixed tilt, a series for a tracker.
+
+    `tracking` was a declared-but-never-read archetype field: every Belgian
+    archetype is `fixed`, so nothing noticed. India's fleet is half single-axis
+    trackers, and reading a tracker's nameplate tilt of 0 degrees as a fixed
+    array models it as a flat panel -- which under-predicts precisely the
+    morning and evening hours a tracker exists to capture. An unknown mode
+    raises rather than falling back to fixed, because silently modelling the
+    wrong array is how a config typo becomes a forecast nobody questions.
+    """
+    mode = a.tracking or "fixed"
+    if mode not in TRACKING_MODES:
+        raise ValueError(f"unknown tracking mode {mode!r}; expected one of {TRACKING_MODES}")
+    if mode == "fixed":
+        return float(a.tilt), float(a.azimuth)
+    tr = pvlib.tracking.singleaxis(
+        apparent_zenith=sp["apparent_zenith"],
+        solar_azimuth=sp["azimuth"],
+        axis_tilt=0.0,
+        axis_azimuth=float(a.azimuth),
+        max_angle=TRACKER_MAX_ANGLE,
+        backtrack=True,
+        gcr=TRACKER_GCR,
+    )
+    # NaN where the sun is down; the array is parked flat and POA is zero anyway.
+    return tr["surface_tilt"].fillna(0.0), tr["surface_azimuth"].fillna(float(a.azimuth))
+
 
 def _sun_minutes(loc: Location, idx: pd.DatetimeIndex) -> tuple[np.ndarray, np.ndarray]:
     days = idx.normalize().unique()
@@ -68,9 +103,10 @@ def solar_features(wx: pd.DataFrame, site: SiteMaster) -> pd.DataFrame:
         kt = np.where(cs_ghi > 1.0, ghi / cs_ghi, 0.0)
     kt = np.clip(np.nan_to_num(kt), 0.0, KT_MAX)
 
+    surface_tilt, surface_azimuth = _orientation(a, sp)
     poa = pvlib.irradiance.get_total_irradiance(
-        surface_tilt=float(a.tilt),
-        surface_azimuth=float(a.azimuth),
+        surface_tilt=surface_tilt,
+        surface_azimuth=surface_azimuth,
         solar_zenith=sp["apparent_zenith"],
         solar_azimuth=sp["azimuth"],
         dni=pd.Series(dni, index=idx),

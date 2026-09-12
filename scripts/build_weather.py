@@ -18,6 +18,13 @@ import glob
 import pathlib
 import pandas as pd
 
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+from src.quality.schemas import SCHEMA_FOR_TABLE  # noqa: E402
+from src.quality.validators import validate  # noqa: E402
+
 BRONZE = pathlib.Path("data/bronze")
 SILVER = pathlib.Path("data/silver")
 REGION_ID = "BE"
@@ -53,6 +60,12 @@ META = ["grid_point_id", "weight", "nwp_model", "latitude", "longitude", "elevat
 
 
 def _write(df, layer, name):
+    schema = SCHEMA_FOR_TABLE.get(name)
+    if schema is not None:
+        # strict=False: drop the rows a contract rejects and keep the run going.
+        # An ingestion pipeline that hard-stops on the first out-of-range
+        # temperature is worse than one that serves the rest and logs the drop.
+        df = validate(df, schema, name, strict=False)
     dest = layer / name
     dest.mkdir(parents=True, exist_ok=True)
     df.to_parquet(dest / "part-0.parquet", index=False)

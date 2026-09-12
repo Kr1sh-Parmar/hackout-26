@@ -18,15 +18,39 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_numeric_dtype
 
 # PSI > 0.2 is the standard credit-risk-modelling line for "material" drift;
 # 0.1-0.2 is "moderate", < 0.1 is noise. We alert only on the material line.
 PSI_THRESHOLD = 0.2
 PSI_BINS = 10
 
+# The per-tech verdict a forecast cycle writes to `gold/drift` and /health reads
+# back. Owned here rather than by the script, so the producer and the two
+# consumers (the cycle's log line, the health endpoint) agree by construction.
+DRIFT_COLUMNS: list[str] = [
+    "tech",
+    "n_features_drifted",
+    "drifted_features",
+    "max_psi",
+    "n_scored_hours",
+    "recent_rmse_cf",
+    "baseline_rmse_cf",
+    "relative_increase",
+    "retrain",
+    "reason",
+]
+
 # error is "materially worse" than the backtest baseline once recent RMSE
 # exceeds it by this relative margin.
 ERROR_DEGRADATION_FRAC = 0.20
+
+# ...and only once there is enough of it to mean anything. One week of hours.
+# Measured here: a single cycle contributes ~22 scored wind hours, and that
+# sample put recent RMSE 27% above a baseline computed over 31,091 rows -- which
+# is sampling noise wearing a retrain recommendation. A monitor that fires on
+# one bad afternoon is a monitor somebody switches off.
+MIN_SCORED_HOURS = 168
 
 
 def _psi(reference: pd.Series, current: pd.Series, bins: int = PSI_BINS) -> float:
@@ -52,6 +76,58 @@ def _psi(reference: pd.Series, current: pd.Series, bins: int = PSI_BINS) -> floa
     ref_frac = np.maximum(ref_counts / ref_counts.sum(), 1e-6)
     cur_frac = np.maximum(cur_counts / cur_counts.sum(), 1e-6)
     return float(np.sum((cur_frac - ref_frac) * np.log(cur_frac / ref_frac)))
+
+
+# Columns that are not model INPUTS: the targets, the TSO's own forecast, demand,
+# identifiers and bookkeeping. Drift in a target is not input drift, and a PSI on
+# an id column is noise with a number attached.
+_NON_INPUT_PREFIXES = ("y_", "tso_", "sample_weight", "qc_ok", "demand_")
+_NON_INPUT = frozenset(
+    {"region_id", "run_ts_utc", "valid_ts_utc", "lead_hours", "forecast_vintage", "is_day"}
+)
+
+
+def comparable_features(reference: pd.DataFrame, current: pd.DataFrame) -> list[str]:
+    """Numeric input columns present in BOTH frames.
+
+    Derived rather than hardcoded: the training matrix grows columns as the
+    feature set does, and a hand-maintained list would monitor last month's
+    inputs while silently ignoring the new ones -- the exact failure a drift
+    monitor exists to prevent.
+    """
+    return sorted(
+        c
+        for c in reference.columns
+        if c in current.columns
+        and c not in _NON_INPUT
+        and not c.startswith(_NON_INPUT_PREFIXES)
+        and is_numeric_dtype(reference[c])
+        and is_numeric_dtype(current[c])
+    )
+
+
+def seasonal_window(
+    frame: pd.DataFrame, around: pd.Series, half_width_days: int = 21, ts_col: str = "valid_ts_utc"
+) -> pd.DataFrame:
+    """Restrict `frame` to the same calendar period as `around`, in any year.
+
+    Measured on this dataset: a September current window against the full
+    training history flags 12 features -- temperature, pressure, humidity and
+    wind direction, at all three NWP models. Every one of them is the calendar,
+    not the fleet. The reference spans two and a half years of every season, so
+    a one-month window is guaranteed to sit off-centre in it, and a monitor that
+    fires every autumn is a monitor somebody switches off.
+
+    Comparing September against previous Septembers asks the question actually
+    worth asking: is THIS September unlike the ones the model was fitted on.
+    """
+    if frame.empty or around.empty:
+        return frame
+    ref_doy = pd.to_datetime(frame[ts_col], utc=True).dt.dayofyear
+    target = float(pd.to_datetime(around, utc=True).dt.dayofyear.median())
+    # circular distance in days, so a window spanning New Year still matches
+    delta = (ref_doy - target + 182.5) % 365.0 - 182.5
+    return frame[delta.abs() <= half_width_days]
 
 
 def feature_drift(
@@ -82,29 +158,35 @@ def error_drift(
     recent_errors: pd.Series,
     baseline_rmse: float,
     degradation_frac: float = ERROR_DEGRADATION_FRAC,
+    min_scored_hours: int = MIN_SCORED_HOURS,
 ) -> dict:
     """Is recent error materially worse than the backtest baseline?
 
     `recent_errors` is a series of signed or absolute residuals (same units as
     `baseline_rmse`, e.g. capacity factor); RMSE is computed here so the
     caller doesn't have to pre-aggregate.
+
+    `relative_increase` is always reported -- it is useful to watch a trend --
+    but `degraded` stays False below `min_scored_hours`, so a thin sample never
+    escalates into a retrain recommendation on its own.
     """
     errs = pd.to_numeric(recent_errors, errors="coerce").dropna().to_numpy(dtype=float)
     recent_rmse = float(np.sqrt(np.mean(errs**2))) if errs.size else float("nan")
-    if not np.isfinite(recent_rmse) or baseline_rmse <= 0:
-        return {
-            "recent_rmse": recent_rmse,
-            "baseline_rmse": float(baseline_rmse),
-            "relative_increase": float("nan"),
-            "degraded": False,
-        }
-    relative_increase = (recent_rmse - baseline_rmse) / baseline_rmse
-    return {
+    out = {
+        "n": int(errs.size),
         "recent_rmse": recent_rmse,
         "baseline_rmse": float(baseline_rmse),
-        "relative_increase": float(relative_increase),
-        "degraded": bool(relative_increase > degradation_frac),
+        "relative_increase": float("nan"),
+        "degraded": False,
+        "underpowered": bool(errs.size < min_scored_hours),
     }
+    if not np.isfinite(recent_rmse) or baseline_rmse <= 0:
+        return out
+    out["relative_increase"] = (recent_rmse - baseline_rmse) / baseline_rmse
+    out["degraded"] = bool(
+        out["relative_increase"] > degradation_frac and errs.size >= min_scored_hours
+    )
+    return out
 
 
 # Columns whose drift is DESIGNED FOR, not a warning. Belgium's installed
@@ -149,14 +231,28 @@ def should_retrain(
     if degraded:
         pct = error_result["relative_increase"] * 100
         return True, f"error degraded {pct:.0f}% above baseline RMSE -- retrain"
+    if error_result.get("underpowered") and np.isfinite(
+        error_result.get("relative_increase", float("nan"))
+    ):
+        pct = error_result["relative_increase"] * 100
+        watching = (
+            f"recent error is {pct:+.0f}% vs baseline on only {error_result.get('n', 0)} "
+            f"scored hours -- too few to act on"
+        )
+    else:
+        watching = ""
+
     if n_drifted >= min_drifted_features:
         return True, (
             f"{n_drifted} feature(s) drifted ({', '.join(drifted_names)}) with no error "
             "degradation yet -- retrain pre-emptively or keep monitoring"
+            + (f"; {watching}" if watching else "")
         )
     if expected:
         return False, (
             f"only expected drift ({', '.join(expected)}) -- installed capacity grew, which "
             "training on capacity factor absorbs by design; no retrain needed"
         )
+    if watching:
+        return False, f"no material feature drift; {watching}"
     return False, "no material feature or error drift detected"

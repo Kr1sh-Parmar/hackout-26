@@ -165,3 +165,68 @@ def test_malformed_outlook_raises_a_specific_error(grid_state):
     bad = pd.DataFrame({"valid_ts_utc": pd.date_range("2026-09-10", periods=3, tz="UTC")})
     with pytest.raises(ValueError, match="missing"):
         recommend(bad, grid_state, load_region("BE"))
+
+
+def test_saved_metadata_is_strict_json(tmp_path):
+    """`json.dumps` emits a bare `NaN` and `json.loads` reads it back, so a
+    Python round-trip never notices -- but `JSON.parse` and `jq` both reject the
+    file, and the frontend reads this sidecar. A metric with no value for the
+    run is null.
+    """
+    import json
+
+    from src.models.registry import REQUIRED_META, save_model
+
+    meta = dict.fromkeys(REQUIRED_META, "x")
+    meta["nrmse_tso_wa"] = float("nan")  # no week-ahead TSO forecast for this run
+    save_model({}, None, meta, tmp_path / "m")
+
+    raw = (tmp_path / "m" / "metadata.json").read_text(encoding="utf-8")
+    assert "NaN" not in raw and "Infinity" not in raw
+    assert json.loads(raw, parse_constant=_reject)["nrmse_tso_wa"] is None
+
+
+def _reject(token):  # pragma: no cover - only runs if the guard above fails
+    raise AssertionError(f"non-standard JSON constant in artifact: {token}")
+
+
+def test_an_unservable_incumbent_does_not_block_promotion():
+    """The gate defended a model that could no longer score a single row.
+
+    Drop a feature from the builder and the incumbent's `_align` refuses every
+    frame -- correctly. Comparing nRMSE against it then keeps a model that works
+    only on paper, and nothing can ever be promoted past it: /forecast 500s
+    until someone deletes the artifact by hand. Calibration still gates.
+    """
+    from src.models.registry import promote
+
+    incumbent = {"picp_mean": 0.80, "nrmse_mean": 0.0817, "features": ["a", "b", "dead"]}
+    better_but_unaligned = {"picp_mean": 0.80, "nrmse_mean": 0.0833, "features": ["a", "b"]}
+    assert promote(better_but_unaligned, incumbent)
+
+    # a servable incumbent is still defended: 2% worse does not get promoted
+    servable = {"picp_mean": 0.80, "nrmse_mean": 0.0817, "features": ["a", "b"]}
+    assert not promote(better_but_unaligned, servable)
+
+    # and an uncalibrated candidate never gets in, whatever the incumbent is
+    uncalibrated = {"picp_mean": 0.60, "nrmse_mean": 0.01, "features": ["a", "b"]}
+    assert not promote(uncalibrated, incumbent)
+
+
+def test_a_calibration_only_improvement_can_be_promoted():
+    """The gate knew only about nRMSE, so a change that left accuracy identical
+    and moved PICP 0.777 -> 0.808 at a narrower band could never ship. Coverage
+    is half of what the platform promises; it gates in both directions."""
+    from src.models.registry import promote
+
+    incumbent = {"picp_mean": 0.777, "nrmse_mean": 0.0450, "features": ["a"]}
+    better_covered = {"picp_mean": 0.808, "nrmse_mean": 0.0450, "features": ["a"]}
+    assert promote(better_covered, incumbent)
+
+    # buying that coverage with real accuracy is still a regression
+    bought_with_error = {"picp_mean": 0.800, "nrmse_mean": 0.0500, "features": ["a"]}
+    assert not promote(bought_with_error, incumbent)
+
+    # and so is trading coverage away for sharpness that is inside the noise floor
+    decalibrated = {"picp_mean": 0.700, "nrmse_mean": 0.0449, "features": ["a"]}
+    assert not promote(decalibrated, incumbent)

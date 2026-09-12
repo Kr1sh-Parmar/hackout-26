@@ -3,6 +3,16 @@
 Cross-model spread is already computed in ETL (`<var>_model_std` / `_model_range`).
 These features predict our own error, which is what turns a point forecast into
 an honest interval.
+
+`nwp_bias_lag_7d` used to live here as a constant 0.0: a pure feature function
+has no error history to compute a bias from, so it never carried information.
+Re-measured after removal, every backtest number is bit-identical -- LightGBM
+discards a zero-variance column at binning, so the feature was only ever
+decorating the metadata sidecar with a driver that drove nothing. The upgrade
+path if it is ever wanted: pass a lead-keyed bias table in as an argument and
+look it up here. That keeps the function pure; it just needs the table, and the
+table has to be built identically on the training and serving paths or it
+becomes train/serve skew in the one family the parity test cannot check.
 """
 
 from __future__ import annotations
@@ -16,7 +26,6 @@ NWP_COLUMNS = [
     "ghi_model_range",
     "nwp_ghi_ramp",
     "nwp_ws_ramp",
-    "nwp_bias_lag_7d",
 ]
 
 _MAP = {
@@ -40,8 +49,4 @@ def nwp_quality_features(wx: pd.DataFrame) -> pd.DataFrame:
         out[name] = wx[src].to_numpy(dtype=float) if src in wx.columns else np.nan
     out["nwp_ghi_ramp"] = _ramp(wx, "ghi_wm2")
     out["nwp_ws_ramp"] = _ramp(wx, "wind_speed_100m_ms")
-    # ponytail: no error history reaches a pure feature function, so the bias
-    # term is a structural zero. Upgrade path: pass a lead-keyed bias table in
-    # and look it up here -- it stays pure, it just needs the table as an arg.
-    out["nwp_bias_lag_7d"] = 0.0
     return out

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 
 from ...core.config import load_region
 from ...core.store import ParquetStore
+from ...ingest.replay import latest_replay_run, read_table
 from ..deps import get_settings, get_store
 from ..schemas import Health, SiteInfo
 from ._common import list_region_ids
@@ -37,15 +38,21 @@ def get_health(store: ParquetStore = Depends(get_store)) -> Health:
     warnings: list[str] = []
 
     for region_id in regions:
-        latest = store.latest_run(region_id)
+        # Freshness has to come from whichever source is actually being served.
+        # Reading gold here while the endpoints serve a snapshot reported "no
+        # data yet" on precisely the machine replay mode exists for.
+        replayed = latest_replay_run(region_id) if settings.replay_mode else None
+        latest = replayed or store.latest_run(region_id)
         if latest is None:
             warnings.append(f"{region_id}: no gold forecast data yet")
             continue
         lag_min = (now - latest).total_seconds() / 60
-        if lag_min > settings.stale_warn_after_minutes:
+        # Frozen data is old ON PURPOSE; saying so every time would train the
+        # operator to ignore the warnings list. `replay_mode` already says it.
+        if lag_min > settings.stale_warn_after_minutes and replayed is None:
             warnings.append(f"{region_id}: latest run is {lag_min:.0f} min old (ingest lag)")
 
-        fc = store.read_forecast(region_id, horizon=1)
+        fc = read_table(region_id, "forecast", store, horizon=1)
         if not fc.empty and "calibration_date" in fc.columns:
             try:
                 cal = pd.Timestamp(fc["calibration_date"].iloc[0])
@@ -56,6 +63,13 @@ def get_health(store: ParquetStore = Depends(get_store)) -> Health:
                     warnings.append(f"{region_id}: calibration is {age_days}d old")
             except (ValueError, TypeError):
                 pass
+
+        for _, d in read_table(region_id, "drift", store).iterrows():
+            # The monitor already decided AND said why; /health repeats the
+            # reason rather than re-deriving a verdict from the numbers, so an
+            # operator and a retraining job can never disagree about the call.
+            if d.get("retrain"):
+                warnings.append(f"{region_id}/{d['tech']}: {d['reason']}")
 
     if settings.replay_mode:
         warnings.append("replay_mode is active -- serving replayed, not live, data")

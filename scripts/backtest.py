@@ -25,8 +25,13 @@ from src.evaluation.report import per_lead_hour_report, summarise  # noqa: E402
 from src.evaluation.walk_forward import assert_no_overlap, walk_forward  # noqa: E402
 from src.features.build import build_all_features  # noqa: E402
 from src.models.physics import physics_forecast  # noqa: E402
+from src.models.registry import json_safe  # noqa: E402
 from src.models.residual_gbdt import predict_residual, train_residual  # noqa: E402
-from src.uncertainty.conformal import SplitConformal, calibration_mask  # noqa: E402
+from src.uncertainty.conformal import (  # noqa: E402
+    SplitConformal,
+    calibration_mask,
+    conditioning_buckets,
+)
 
 GOLD = "data/gold/training_base_24_72h/part-0.parquet"
 OUT = pathlib.Path("data/gold/backtest")
@@ -48,11 +53,13 @@ def fold_predictions(cfg, tech, fold, actuals, cap) -> pd.DataFrame:
         x_c, phys_c, y_c = prep(fold.calibrate)
         b_c = predict_residual(models, x_c, phys_c, cap)
         cmask = calibration_mask(fold.calibrate, tech)
+        cond_c = conditioning_buckets(x_c, tech)
         conformal = SplitConformal(alpha=0.2).calibrate(
             b_c["p10_mw"].to_numpy(dtype=float)[cmask],
             b_c["p90_mw"].to_numpy(dtype=float)[cmask],
             (y_c * cap)[cmask],
             fold.calibrate["lead_hours"].to_numpy(dtype=float)[cmask],
+            None if cond_c is None else cond_c[cmask],
         )
 
     te = fold.test
@@ -61,7 +68,9 @@ def fold_predictions(cfg, tech, fold, actuals, cap) -> pd.DataFrame:
     lo = b["p10_mw"].to_numpy(dtype=float)
     hi = b["p90_mw"].to_numpy(dtype=float)
     if conformal is not None:
-        lo, hi = conformal.apply(lo, hi, te["lead_hours"].to_numpy(dtype=float))
+        lo, hi = conformal.apply(
+            lo, hi, te["lead_hours"].to_numpy(dtype=float), conditioning_buckets(x_te, tech)
+        )
 
     cf = hourly_actual_cf(actuals)
     return pd.DataFrame(
@@ -141,7 +150,9 @@ def main() -> None:
         results.append(run(args.region, tech, args.quick))
 
     pathlib.Path("artifacts").mkdir(exist_ok=True)
-    pathlib.Path("artifacts/backtest.json").write_text(json.dumps(results, indent=2))
+    pathlib.Path("artifacts/backtest.json").write_text(
+        json.dumps(json_safe(results), indent=2, allow_nan=False)
+    )
     print("\nwrote artifacts/backtest.json")
 
 

@@ -16,6 +16,12 @@ import sys
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+from src.quality.curtailment import curtailment_flag  # noqa: E402
+from src.quality.schemas import SCHEMA_FOR_TABLE  # noqa: E402
+from src.quality.validators import validate  # noqa: E402
+
 RAW = pathlib.Path("data/raw/elia")
 BRONZE = pathlib.Path("data/bronze")
 SILVER = pathlib.Path("data/silver")
@@ -56,6 +62,9 @@ def _write(df: pd.DataFrame, layer: pathlib.Path, name: str) -> None:
     for c in TS_COLS:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], utc=True)
+    schema = SCHEMA_FOR_TABLE.get(name)
+    if schema is not None:
+        df = validate(df, schema, name, strict=False)
     dest = layer / name
     dest.mkdir(parents=True, exist_ok=True)
     df.to_parquet(dest / "part-0.parquet", index=False)
@@ -109,13 +118,9 @@ def build_wind() -> None:
     df = _read("ods031_wind_historical")
     _write(df, BRONZE, "elia_wind")
 
-    # the column is 100% non-null but ~99.2% EMPTY STRINGS; only a real bid id
-    # means downward redispatch. .notna() would flag 99.6% of the fleet as curtailed.
-    # Elia's CSV export writes an empty text field as the two-character string "''"
-    # (two apostrophes), not as empty or null -- so a naive .notna() or .ne("")
-    # test flags 99.6% of the fleet as curtailed. Strip quotes before testing.
-    _bid = df.decrementalbidid.fillna("").astype(str).str.strip().str.strip("'\"").str.strip()
-    df["is_curtailed"] = _bid.ne("")
+    # See `curtailment_flag` for why this is not `.notna()`. It lives in src/
+    # rather than here so the trap it defuses is covered by a test.
+    df["is_curtailed"] = curtailment_flag(df.decrementalbidid)
     n_seg = df.groupby("ts_utc", observed=True).size()
 
     # per-segment table: the config defines separate onshore/offshore archetypes

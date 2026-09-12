@@ -68,7 +68,6 @@ FEATURE_COLUMNS: list[str] = [
     "ghi_model_range",
     "nwp_ghi_ramp",
     "nwp_ws_ramp",
-    "nwp_bias_lag_7d",
     # temporal
     "hour_sin",
     "hour_cos",

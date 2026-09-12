@@ -61,6 +61,12 @@ class ForecastPoint(BaseModel):
     p50_mw: float
     p90_mw: float
     capacity_mw: float
+    # Whether THIS row's band was conformally calibrated. Not decoration: an
+    # uncalibrated band is a decoration, a calibrated one is a reserve
+    # requirement, and the consumer is entitled to know which it just received.
+    # False below the trained lead band, and false for every row of a
+    # physics-only region, which has no labels to calibrate against.
+    calibrated: bool = False
 
 
 class OutlookPoint(BaseModel):
@@ -115,18 +121,28 @@ class SweepPoint(BaseModel):
 
 
 class LeadHourMetric(BaseModel):
-    """The evaluation track owns the backtest gold table; its exact metric
-    set may grow. `extra="allow"` lets new columns pass through unvalidated
-    rather than 500ing the whole endpoint the day it lands."""
+    """One lead hour of the walk-forward backtest.
+
+    The evaluation track owns the gold table and its metric set may grow, so
+    `extra="allow"` lets a new column through rather than 500ing the endpoint
+    the day it lands. The named fields are the ones a client can rely on --
+    everything here is NORMALISED by installed capacity, which is why there is
+    no `_mw` metric in the list: megawatt errors are not comparable between two
+    regions, two technologies, or the same fleet a year apart.
+    """
 
     model_config = ConfigDict(extra="allow")
 
     lead_hours: int
     tech: Tech
-    mae_mw: float | None = None
-    rmse_mw: float | None = None
-    bias_mw: float | None = None
-    n_obs: int | None = None
+    n_rows: int | None = None
+    nrmse_model: float | None = None
+    nrmse_persistence: float | None = None
+    nrmse_physics: float | None = None
+    nrmse_tso: float | None = None
+    skill_vs_persistence: float | None = None
+    picp_80: float | None = None
+    mean_width_frac: float | None = None
 
 
 class Driver(BaseModel):

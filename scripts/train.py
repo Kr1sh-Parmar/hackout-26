@@ -39,7 +39,11 @@ from src.models.residual_gbdt import (  # noqa: E402
     predict_residual,
     train_residual,
 )
-from src.uncertainty.conformal import SplitConformal, calibration_mask  # noqa: E402
+from src.uncertainty.conformal import (  # noqa: E402
+    SplitConformal,
+    calibration_mask,
+    conditioning_buckets,
+)
 
 GOLD = "data/gold/training_base_24_72h/part-0.parquet"
 CALIBRATE_DAYS = 45
@@ -142,11 +146,13 @@ def run(region: str, tech: str, bar: tqdm, valid_frac: float, log_period: int) -
     x_cal, phys_cal, y_cal = prep(cal)
     b_cal = predict_residual(models, x_cal, phys_cal, cap)
     cmask = calibration_mask(cal, tech)
+    cond_cal = conditioning_buckets(x_cal, tech)
     conformal = SplitConformal(alpha=0.2).calibrate(
         b_cal["p10_mw"].to_numpy(dtype=float)[cmask],
         b_cal["p90_mw"].to_numpy(dtype=float)[cmask],
         (y_cal * cap)[cmask],
         cal["lead_hours"].to_numpy(dtype=float)[cmask],
+        None if cond_cal is None else cond_cal[cmask],
     )
     stage("scoring")
 
@@ -157,6 +163,7 @@ def run(region: str, tech: str, bar: tqdm, valid_frac: float, log_period: int) -
         b_te["p10_mw"].to_numpy(dtype=float),
         b_te["p90_mw"].to_numpy(dtype=float),
         te["lead_hours"].to_numpy(dtype=float),
+        conditioning_buckets(x_te, tech),
     )
     cf = hourly_actual_cf(actuals)
     preds = pd.DataFrame(
@@ -209,6 +216,12 @@ def run(region: str, tech: str, bar: tqdm, valid_frac: float, log_period: int) -
     except (FileNotFoundError, KeyError):
         incumbent = {}
     meta["promoted"] = not (incumbent and not promote(meta, incumbent))
+    if incumbent and not set(incumbent.get("features", [])) <= set(meta["features"]):
+        tqdm.write(
+            "  incumbent needs features the builder no longer produces "
+            f"({sorted(set(incumbent.get('features', [])) - set(meta['features']))}) "
+            "-- it cannot score live data, so it is not a valid incumbent"
+        )
     if not meta["promoted"]:
         tqdm.write(
             f"  PROMOTION REFUSED -- incumbent nRMSE "

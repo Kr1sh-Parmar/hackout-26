@@ -99,7 +99,7 @@ def test_endpoints_serve_empty_data_when_no_gold_tables_exist(tmp_path, monkeypa
 
 
 def test_no_run_at_all_is_503_not_an_empty_200(tmp_path, monkeypatch):
-    """"Nothing is happening on the grid" and "no model has ever run here" are
+    """ "Nothing is happening on the grid" and "no model has ever run here" are
     different statements, and an operator sizing reserves is entitled to tell
     them apart. An empty 200 conflates them."""
     get_settings.cache_clear()
@@ -156,3 +156,21 @@ def test_unknown_region_is_404_with_a_hint():
         assert r.status_code == 404, path
         body = r.json()
         assert body.get("hint"), f"{path} 404 has no hint: {body}"
+
+
+@pytest.mark.parametrize("path,params", ENDPOINTS)
+def test_every_served_response_logs_its_provenance(path, params, never_stale):
+    """dev-01 12: structured logs carry region_id, run_ts and model_version.
+
+    Without model_version in the line, the log tells you a bad forecast was
+    served but not which model served it -- which is the only question anyone
+    asks of these logs.
+    """
+    from structlog.testing import capture_logs
+
+    with capture_logs() as entries:
+        assert client.get(path, params=params).status_code == 200
+
+    served = [e for e in entries if e.get("event") == "served"]
+    assert served, f"{path} served a response without logging it"
+    assert {"region_id", "run_ts", "model_version"} <= set(served[0])
