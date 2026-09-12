@@ -91,8 +91,8 @@ Weather → [Physics Model] → Physics-only forecast (pvlib solar geometry,
 | 3 | Residual learning (`y_cf − physics_cf`) | ✅ Built |
 | 4 | Quantile regression (α = 0.1 / 0.5 / 0.9) | ✅ Built |
 | 5 | Split-conformal calibration | ✅ Built |
-| 6 | Deep sequence models (N-HiTS / TFT) | Research extension |
-| 7 | Spatio-temporal GNN | Research extension |
+| 6 | Deep sequence models (N-HiTS / TFT) | In training |
+| 7 | Spatio-temporal GNN | In training |
 
 The core modelling ladder (rungs 0–5) is fully implemented and serving live traffic.
 
