@@ -25,6 +25,13 @@ from src.decisions.events import scan_events  # noqa: E402
 from src.decisions.net_load import build_outlook  # noqa: E402
 from src.decisions.recommend import recommend  # noqa: E402
 from src.decisions.storage_sim import simulate  # noqa: E402
+from src.ingest.adapters.elia import (  # noqa: E402
+    LoadUnavailable,
+    climatology_load,
+    fetch_load_forecast,
+)
+from src.ingest.adapters.openmeteo import WeatherUnavailable  # noqa: E402
+from src.ingest.live import live_weather_with_points, run_timestamp  # noqa: E402
 from src.models.predict import predict  # noqa: E402
 
 GOLD = pathlib.Path("data/gold")
@@ -61,9 +68,35 @@ def latest_run(region: str) -> pd.Timestamp:
     return pd.Timestamp(g[g.region_id == region].run_ts_utc.max())
 
 
-def load_demand(region: str) -> pd.DataFrame:
-    d = pd.read_parquet("data/silver/load/part-0.parquet")
-    return d[d["region_id"] == region]
+def load_demand(region: str, horizon: pd.DatetimeIndex | None = None) -> pd.DataFrame:
+    """Demand for the forecast horizon.
+
+    Historical replay reads the silver table. A LIVE run needs demand for hours
+    that have not happened yet, so it fetches Elia's forward load forecast and
+    falls back to an hour-of-week climatology if that is unavailable. Every row
+    carries `demand_vintage`, because an operator must be able to tell the TSO's
+    own number from our substitute for it.
+    """
+    hist = pd.read_parquet("data/silver/load/part-0.parquet")
+    hist = hist[hist["region_id"] == region]
+    if horizon is None:
+        return hist
+
+    try:
+        fwd = fetch_load_forecast(horizon.min(), horizon.max())
+        got = set(fwd["valid_ts_utc"])
+        if len(got & set(horizon)) >= len(horizon) * 0.9:
+            print(f"  demand   Elia forward forecast ({fwd.demand_vintage.mode().iat[0]})")
+            return fwd
+        print(
+            f"  demand   Elia covered only {len(got & set(horizon))}/{len(horizon)} h",
+            file=sys.stderr,
+        )
+    except LoadUnavailable as exc:
+        print(f"  demand   Elia unavailable: {exc}", file=sys.stderr)
+
+    print("  demand   FALLBACK hour-of-week climatology", file=sys.stderr)
+    return climatology_load(hist, horizon)
 
 
 def load_wx_points(region: str, run_ts: pd.Timestamp) -> pd.DataFrame | None:
@@ -85,17 +118,36 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--region", default="BE")
     ap.add_argument("--run-ts", default=None, help="ISO timestamp; default = latest available run")
+    ap.add_argument(
+        "--live",
+        action="store_true",
+        help="fetch weather from now instead of replaying a historical run",
+    )
     args = ap.parse_args()
 
     setup_logging("INFO")
     region = args.region
     cfg = load_region(region)
-    run_ts = pd.Timestamp(args.run_ts) if args.run_ts else latest_run(region)
-    if run_ts.tz is None:
-        run_ts = run_ts.tz_localize("UTC")
-    print(f"== cycle {region} @ {run_ts.isoformat()} ==")
+    wx = wx_points = None
+    if args.live:
+        run_ts = run_timestamp()
+        print(f"== LIVE cycle {region} @ {run_ts.isoformat()} ==")
+        try:
+            wx, wx_points = live_weather_with_points(cfg, run_ts=run_ts)
+        except WeatherUnavailable as exc:
+            # Degrade to the last good run and SAY SO. Serving a stale forecast
+            # as if it were current is worse than serving nothing.
+            print(f"  live weather unavailable: {exc}", file=sys.stderr)
+            print("  falling back to the latest historical run", file=sys.stderr)
+            run_ts, wx, wx_points = latest_run(region), None, None
+        print(f"  weather  {len(wx):,} rows" if wx is not None else "  weather  from gold")
+    else:
+        run_ts = pd.Timestamp(args.run_ts) if args.run_ts else latest_run(region)
+        if run_ts.tz is None:
+            run_ts = run_ts.tz_localize("UTC")
+        print(f"== cycle {region} @ {run_ts.isoformat()} ==")
 
-    fc = predict(region, run_ts)
+    fc = predict(region, run_ts, weather=wx)
     write(fc, "forecast", region, run_ts)
     # carry the producing model onto every derived table
     prov = {
@@ -103,10 +155,13 @@ def main() -> None:
         "calibration_date": str(fc["calibration_date"].iloc[0]) if len(fc) else "unknown",
     }
 
-    outlook = build_outlook(fc, load_demand(region), cfg)
+    horizon = pd.DatetimeIndex(sorted(fc["valid_ts_utc"].unique())) if len(fc) else None
+    demand = load_demand(region, horizon if args.live else None)
+    outlook = build_outlook(fc, demand, cfg)
     write(outlook, "outlook", region, run_ts, prov)
 
-    events = scan_events(outlook, wx_points=load_wx_points(region, run_ts), cfg=cfg)
+    points = wx_points if wx_points is not None else load_wx_points(region, run_ts)
+    events = scan_events(outlook, wx_points=points, cfg=cfg)
     write(events, "events", region, run_ts, prov)
 
     soc = cfg.storage.energy_capacity_mwh * 0.5

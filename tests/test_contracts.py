@@ -35,10 +35,17 @@ def test_build_features_signature():
 
 
 def test_predict_signature():
+    """The four contracted inputs come first. Extras must be optional, so a
+    caller written against the contract keeps working."""
     p = inspect.signature(predict).parameters
-    assert list(p) == ["region_id", "run_ts", "horizons", "quantiles"]
+    names = list(p)
+    assert names[:4] == ["region_id", "run_ts", "horizons", "quantiles"]
     assert p["horizons"].default == range(1, 73)
     assert p["quantiles"].default == QUANTILES
+    for extra in names[4:]:
+        assert p[extra].default is not inspect.Parameter.empty, (
+            f"{extra} was added to predict() without a default, breaking the contract"
+        )
 
 
 def test_recommend_signature():

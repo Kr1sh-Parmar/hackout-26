@@ -18,6 +18,21 @@ ARTIFACT_SUBDIR = "models"
 PICKLE_NAME = "model.joblib"
 META_NAME = "metadata.json"
 
+# Provenance that has to survive the person who trained the model. Every one of
+# these answers a question asked only after a bad forecast, when the training
+# session is long gone: what was it fitted on, in what order, over which window,
+# with which hyperparameters, and did those come from tuning or from the defaults.
+REQUIRED_META = (
+    "model_version",
+    "calibration_date",
+    "features",
+    "train_end",
+    "calibrate_end",
+    "test_start",
+    "params",
+    "params_source",
+)
+
 
 def model_dir(region: str, tech: str) -> pathlib.Path:
     root = pathlib.Path(get_settings().artifact_root)
@@ -30,6 +45,11 @@ def save_model(models, conformal, meta: dict, path: str | pathlib.Path) -> pathl
     joblib.dump({"models": models, "conformal": conformal}, path / PICKLE_NAME)
 
     meta = dict(meta)
+    missing = [
+        k for k in REQUIRED_META if k not in meta and k not in ("model_version", "calibration_date")
+    ]
+    if missing:
+        raise ValueError(f"refusing to save an unprovenanced artifact; metadata missing {missing}")
     meta.setdefault("model_version", dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ"))
     meta.setdefault("calibration_date", dt.datetime.now(dt.UTC).date().isoformat())
     (path / META_NAME).write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")

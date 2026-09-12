@@ -11,7 +11,7 @@
 | # | Sub-problem | The actual question | Why it is hard | Metric |
 |---|---|---|---|---|
 | 1 | **Weather → resource** | Turn a numerical weather prediction into expected irradiance / hub-height wind at this location | NWP grids are 9–25 km; the error is systematic bias, not noise | MBE, nRMSE on GHI / wind speed |
-| 2 | **Resource → power** | Turn irradiance or wind speed into MW | Strongly non-linear and asset-specific: inverter clipping, soiling, wake losses, cut-out shutdown | nRMSE, nMAE on MW |
+| 2 | **Resource → power** | Turn irradiance or wind speed into MW | Strongly non-linear and asset-specific: inverter clipping, soiling, wake losses, cut-out shutdown | nRMSE, nMAE on MW |                
 | 3 | **Uncertainty** | How wrong might this be, at each hour? | Error is heteroscedastic — near zero at 03:00, very large on a broken-cloud afternoon | Pinball loss, CRPS, PICP |
 | 4 | **Event detection** | Where are the ramps and the over-generation windows? | A 2 % RMSE improvement is worth less than catching one 40 % ramp | Ramp hit rate, lead time |
 | 5 | **Action** | Curtail, charge, discharge or commit backup — and why | Requires demand, must-run capacity, storage state and ramp limits, not just the forecast | MWh recovered, deviation cost avoided |

@@ -17,34 +17,17 @@ What this does do:
 from __future__ import annotations
 
 import pathlib
+import sys
 
-import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+from src.ingest.regional import regionalise  # noqa: E402
 
 SILVER = pathlib.Path("data/silver")
 GOLD = pathlib.Path("data/gold")
 REGION_ID = "BE"
-
-WX_VARS = [
-    "ghi_wm2",
-    "dni_wm2",
-    "dhi_wm2",
-    "direct_radiation_wm2",
-    "temperature_2m_c",
-    "dew_point_2m_c",
-    "relative_humidity_2m_pct",
-    "surface_pressure_hpa",
-    "cloud_cover_pct",
-    "cloud_cover_low_pct",
-    "cloud_cover_mid_pct",
-    "cloud_cover_high_pct",
-    "wind_speed_10m_ms",
-    "wind_speed_100m_ms",
-    "wind_direction_100m_deg",
-    "wind_gusts_10m_ms",
-    "precipitation_mm",
-]
-KEY = ["run_ts_utc", "valid_ts_utc", "forecast_vintage"]
 
 
 def _write(df, name):
@@ -55,46 +38,15 @@ def _write(df, name):
 
 
 def regional_weather() -> pd.DataFrame:
-    """Capacity-weighted mean across grid points, renormalised over non-null
-    weights so one missing point does not silently shrink the regional value."""
+    """Per-point, per-model silver weather -> one regional row per key.
+
+    The aggregation itself lives in `src/ingest/regional.py` because the LIVE
+    path must do it identically. Duplicating it here would let the two drift,
+    and a model served differently-aggregated weather than it trained on is
+    train/serve skew that no backtest can see.
+    """
     wx = pd.read_parquet(SILVER / "weather_nwp" / "part-0.parquet")
-    vars_ = [v for v in WX_VARS if v in wx.columns]
-    g = KEY + ["nwp_model"]
-
-    num = wx[g].copy()
-    for v in vars_:
-        num[v] = wx[v] * wx.weight
-    wsum = wx[g].copy()
-    for v in vars_:
-        wsum[v] = wx.weight.where(wx[v].notna())
-
-    agg_n = num.groupby(g, observed=True)[vars_].sum(min_count=1)
-    agg_w = wsum.groupby(g, observed=True)[vars_].sum(min_count=1)
-    reg = (agg_n / agg_w.replace(0, np.nan)).reset_index()
-
-    # is_day is geometric, identical across points
-    if "is_day" in wx.columns:
-        day = wx.groupby(g, observed=True)["is_day"].max().reset_index()
-        reg = reg.merge(day, on=g, how="left")
-
-    # wide: one column block per NWP model
-    wide = reg.pivot_table(index=KEY, columns="nwp_model", values=vars_, observed=True)
-    wide.columns = [f"{v}__{m}" for v, m in wide.columns]
-    wide = wide.reset_index()
-
-    # blend + disagreement: disagreement predicts our own error
-    for v in vars_:
-        cols = [c for c in wide.columns if c.startswith(f"{v}__")]
-        if not cols:
-            continue
-        wide[v] = wide[cols].mean(axis=1)
-        wide[f"{v}_model_std"] = wide[cols].std(axis=1)
-        wide[f"{v}_model_range"] = wide[cols].max(axis=1) - wide[cols].min(axis=1)
-
-    if "is_day" in reg.columns:
-        d = reg.groupby(KEY, observed=True)["is_day"].max().reset_index()
-        wide = wide.merge(d, on=KEY, how="left")
-    return wide
+    return regionalise(wx)
 
 
 def hourly_generation(tech: str) -> pd.DataFrame:

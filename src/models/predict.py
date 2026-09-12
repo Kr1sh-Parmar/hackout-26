@@ -65,6 +65,7 @@ def predict(
     run_ts: pd.Timestamp,
     horizons: range = range(1, 73),
     quantiles: tuple[float, ...] = QUANTILES,
+    weather: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Produce calibrated quantile forecasts for one region and one NWP run.
 
@@ -88,7 +89,9 @@ def predict(
     run_ts = pd.Timestamp(run_ts)
     if run_ts.tz is None:
         raise ValueError("run_ts must be tz-aware UTC")
-    wx = load_run_weather(region_id, run_ts, horizons)
+    # `weather` is the LIVE path: a frame from src.ingest.live shaped exactly
+    # like the gold table. Absent it, replay a historical run from gold.
+    wx = load_run_weather(region_id, run_ts, horizons) if weather is None else weather
 
     frames = []
     for tech in sorted(cfg.capacity_mw):
@@ -168,13 +171,20 @@ def _forecast_tech(cfg, tech, wx, artifact, quantiles) -> pd.DataFrame:
 
 
 def load_run_weather(region_id: str, run_ts: pd.Timestamp, horizons: range) -> pd.DataFrame:
-    """Weather rows for one run.
+    """Weather rows for one historical run, from the gold table.
 
-    ponytail: reads the gold table directly. Swap for `core.store` once it lands
-    -- same frame, one import change.
+    This is the REPLAY path. The live path passes `weather=` into predict()
+    instead -- see `src.ingest.live.live_weather`, which produces a frame with
+    the same columns so neither the feature builder nor the model can tell the
+    difference.
+
+    ponytail: reads the parquet directly rather than via core.store; same frame,
+    one import to change if the store ever grows a training-matrix reader.
     """
     root = pathlib.Path(get_settings().data_root)
     path = root / "gold" / "training_base_24_72h" / "part-0.parquet"
+    if not path.exists():
+        raise RuntimeError(f"no training matrix at {path}; run scripts/build_gold.py")
     df = pd.read_parquet(path)
     sel = df[
         (df["region_id"] == region_id)
@@ -182,7 +192,12 @@ def load_run_weather(region_id: str, run_ts: pd.Timestamp, horizons: range) -> p
         & (df["lead_hours"].isin(list(horizons)))
     ]
     if sel.empty:
-        raise RuntimeError(f"no weather rows for {region_id} run {run_ts.isoformat()}")
+        available = df.loc[df["region_id"] == region_id, "run_ts_utc"]
+        hint = f" latest available run is {available.max()}" if len(available) else ""
+        raise RuntimeError(
+            f"no weather rows for {region_id} run {run_ts.isoformat()}.{hint} "
+            "For a forecast from now, use the live path (scripts/run_cycle.py --live)."
+        )
     return sel.sort_values("valid_ts_utc").reset_index(drop=True)
 
 
