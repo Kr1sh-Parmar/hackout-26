@@ -1,0 +1,70 @@
+# Belgium (Elia) -- the validation region.
+#
+# Values marked [MEASURED] were derived from the downloaded Elia data rather than
+# assumed; see data/_reports/manifest.md. Values marked [ASSUMED] are stated
+# assumptions and are refined by the clear-sky archetype fit (dev-03 §5).
+
+region_id: BE
+timezone: Europe/Brussels
+resolution_min: 15
+
+# [MEASURED] monitored capacity, most recent Elia value (2026-09-10)
+capacity_mw:
+  solar: 12128.3
+  wind: 5924.1
+
+# capacity-weighted sample points; a single centroid misses frontal systems
+# crossing the region
+weather_grid:
+  - {id: flanders_w, lat: 51.05, lon: 3.72, weight: 0.30}
+  - {id: antwerp,    lat: 51.22, lon: 4.40, weight: 0.25}
+  - {id: brussels,   lat: 50.85, lon: 4.35, weight: 0.15}
+  - {id: liege,      lat: 50.63, lon: 5.57, weight: 0.18}
+  - {id: namur,      lat: 50.46, lon: 4.87, weight: 0.12}
+
+# full Open-Meteo model ids -- these must match the nwp_model values stored in
+# silver/weather_nwp, not the short names used in the architecture docs
+nwp_models: [ecmwf_ifs025, icon_seamless, gfs_seamless]
+
+archetypes:
+  solar:
+    # [ASSUMED] shares -- refined by fit_shares() on clear-sky days only, which
+    # is what identifies orientation rather than absorbing cloud error
+    - {id: rooftop_south,     tilt: 35, azimuth: 180, share: 0.45,
+       tracking: fixed, dc_ac_ratio: 1.15, gamma_pdc: -0.0035, albedo: 0.20,
+       soiling_pct_per_day: 0.0}
+    - {id: rooftop_east_west, tilt: 20, azimuth:  90, share: 0.30,
+       tracking: fixed, dc_ac_ratio: 1.15, gamma_pdc: -0.0035, albedo: 0.20,
+       soiling_pct_per_day: 0.0}
+    - {id: ground_mount,      tilt: 30, azimuth: 180, share: 0.25,
+       tracking: fixed, dc_ac_ratio: 1.25, gamma_pdc: -0.0035, albedo: 0.20,
+       soiling_pct_per_day: 0.0}
+  wind:
+    # [MEASURED] 62.24 / 37.76 from silver/generation_actuals_wind_segment,
+    # mean monitored capacity over the last 30 days. Replaces the 55/45 that the
+    # risk register flagged as "to be replaced with the actual figure".
+    - {id: onshore,  share: 0.6224, hub_height_m:  95, rotor_diameter_m: 117,
+       cut_in_ms: 3, rated_ms: 12, cut_out_ms: 25,
+       shear_alpha: 0.20, wake_loss_frac: 0.08}
+    - {id: offshore, share: 0.3776, hub_height_m: 140, rotor_diameter_m: 167,
+       cut_in_ms: 3, rated_ms: 13, cut_out_ms: 27,
+       shear_alpha: 0.11, wake_loss_frac: 0.12}
+
+decision_thresholds:
+  ramp_limit_mw_per_h: 400      # [ASSUMED]
+  band_limit_frac: 0.35         # p90-p10 above this fraction of capacity => LOW_CONFIDENCE
+  must_run_mw: 2800             # [ASSUMED] -- measured demand ranges 5877..13612 MW
+
+storage:
+  energy_capacity_mwh: 400
+  power_rating_mw: 100
+  round_trip_efficiency: 0.88
+  soc_min_frac: 0.10
+  soc_max_frac: 0.95
+  degradation_per_cycle: 0.00003
+  response_time_min: 5
+
+prices:
+  # [ASSUMED] INR. Stated assumptions, not claimed market data.
+  curtailment_opportunity_cost_per_mwh: 3000
+  backup_fuel_cost_per_mwh: 6500

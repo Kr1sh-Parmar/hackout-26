@@ -1,0 +1,35 @@
+# data is downloadable and large -- scripts/ reproduces it from scratch
+data/raw/
+data/bronze/
+data/silver/
+data/gold/
+data/interim/
+data/processed/
+!data/README.md
+!data/_reports/
+
+# artifacts: models + replay snapshots
+artifacts/*
+!artifacts/.gitkeep
+
+# secrets
+.env
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# node / ui
+ui/node_modules/
+ui/dist/
+
+# os
+.DS_Store
+Thumbs.db

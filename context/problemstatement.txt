@@ -1,0 +1,20 @@
+THEME: RENEWABLE ENERGY INTELLIGENCE
+AI-Powered Renewable Generation Forecasting Platform
+Description:
+Solar and wind power output fluctuates constantly with weather, time of day, and season, making it difficult
+for grid operators and utilities to plan capacity, schedule backup power, or avoid curtailment. This problem
+asks participants to build an intelligence platform that ingests weather data, historical generation records, and
+site-level parameters to forecast solar/wind output over the next 24–72 hours. The system should flag periods
+of expected over/under-generation and recommend grid actions (e.g., curtailment, storage dispatch, backup
+activation).
+User:
+Grid operators, utility companies, renewable plant owners, energy traders.
+Impact:
+• Reduces energy wastage and reliance on fossil-fuel backup plants.
+• Improves grid stability by anticipating supply fluctuations in advance.
+• Enables better financial planning for energy producers and traders.
+Tech that can be used:
+• Time-series forecasting (Python: Prophet, LSTM, XGBoost)
+• Weather/satellite data APIs
+• Real-time dashboards (React, D3.js)
+• Cloud data pipelines
