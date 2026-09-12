@@ -120,22 +120,42 @@ def hourly_generation(tech: str) -> pd.DataFrame:
     return agg[["valid_ts_utc", f"y_{tech}_mw", f"cap_{tech}_mw", f"y_{tech}_cf", f"qc_ok_{tech}"]]
 
 
+# Elia publishes several forecast vintages, each with its own information cutoff.
+# Carrying only one makes the benchmark unfair in a direction that changes with
+# lead hour: `day_ahead_6pm` is issued ~18:00 D-1, so it is effectively a 6-30 h
+# forecast, while `week_ahead` is issued ~7 days out. Our 24-72 h model sits
+# BETWEEN them, so the honest comparison brackets it rather than picking one.
+TSO_VINTAGES = {"da": "day_ahead_6pm", "wa": "week_ahead"}
+
+
 def hourly_tso(tech: str) -> pd.DataFrame:
     t = pd.read_parquet(SILVER / f"tso_forecast_{tech}" / "part-0.parquet")
-    t = t[t.horizon == "day_ahead_6pm"]
     t["valid_ts_utc"] = t.ts_utc.dt.floor("h")
-    a = (
-        t.groupby("valid_ts_utc")
-        .agg(
-            **{
-                f"tso_{tech}_p10_mw": ("p10_mw", "mean"),
-                f"tso_{tech}_p50_mw": ("p50_mw", "mean"),
-                f"tso_{tech}_p90_mw": ("p90_mw", "mean"),
-            }
+    out = None
+    for short, horizon in TSO_VINTAGES.items():
+        sel = t[t.horizon == horizon]
+        if sel.empty:
+            continue
+        agg = (
+            sel.groupby("valid_ts_utc")
+            .agg(
+                **{
+                    f"tso_{tech}_{short}_p10_mw": ("p10_mw", "mean"),
+                    f"tso_{tech}_{short}_p50_mw": ("p50_mw", "mean"),
+                    f"tso_{tech}_{short}_p90_mw": ("p90_mw", "mean"),
+                }
+            )
+            .reset_index()
         )
-        .reset_index()
-    )
-    return a
+        out = agg if out is None else out.merge(agg, on="valid_ts_utc", how="outer")
+
+    # keep the original unsuffixed names as aliases for the day-ahead vintage so
+    # existing callers keep working
+    for q in ("p10", "p50", "p90"):
+        src = f"tso_{tech}_da_{q}_mw"
+        if src in out.columns:
+            out[f"tso_{tech}_{q}_mw"] = out[src]
+    return out
 
 
 def hourly_load() -> pd.DataFrame:

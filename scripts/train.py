@@ -25,7 +25,7 @@ from src.features.build import build_all_features  # noqa: E402
 from src.models.physics import physics_forecast  # noqa: E402
 from src.models.registry import load_model, promote, save_model  # noqa: E402
 from src.models.residual_gbdt import predict_residual, train_residual  # noqa: E402
-from src.uncertainty.conformal import SplitConformal  # noqa: E402
+from src.uncertainty.conformal import SplitConformal, calibration_mask  # noqa: E402
 
 GOLD = "data/gold/training_base_24_72h/part-0.parquet"
 CALIBRATE_DAYS = 45
@@ -72,11 +72,12 @@ def run(region: str, tech: str) -> dict:
     # calibrate on the held-out middle window, per lead hour
     x_cal, phys_cal, y_cal = prep(cal)
     b_cal = predict_residual(models, x_cal, phys_cal, cap)
+    cmask = calibration_mask(cal, tech)
     conformal = SplitConformal(alpha=0.2).calibrate(
-        b_cal["p10_mw"].to_numpy(dtype=float),
-        b_cal["p90_mw"].to_numpy(dtype=float),
-        y_cal * cap,
-        cal["lead_hours"].to_numpy(dtype=float),
+        b_cal["p10_mw"].to_numpy(dtype=float)[cmask],
+        b_cal["p90_mw"].to_numpy(dtype=float)[cmask],
+        (y_cal * cap)[cmask],
+        cal["lead_hours"].to_numpy(dtype=float)[cmask],
     )
 
     # score on the final window, which neither fitting step has seen

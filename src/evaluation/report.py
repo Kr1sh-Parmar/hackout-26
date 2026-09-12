@@ -14,7 +14,7 @@ from .metrics import ace, interval_width, mbe, nmae, nrmse, picp, pinball, skill
 
 # The frame `per_lead_hour_report` expects. Track A produces it; Track C scores it.
 REQUIRED = ["y_true", "p50", "lead_hours"]
-OPTIONAL = ["p10", "p90", "persistence", "physics", "tso", "is_day", "climatology"]
+OPTIONAL = ["p10", "p90", "persistence", "physics", "tso", "tso_wa", "is_day", "climatology"]
 
 REPORT_COLUMNS = [
     "lead_hours",
@@ -23,6 +23,7 @@ REPORT_COLUMNS = [
     "nrmse_persistence",
     "nrmse_physics",
     "nrmse_tso",
+    "nrmse_tso_wa",
     "skill_vs_persistence",
     "skill_vs_physics",
     "nmae_model",
@@ -78,7 +79,11 @@ def per_lead_hour_report(
             nrmse(g.y_true, g.persistence, capacity) if has("persistence") else np.nan
         )
         row["nrmse_physics"] = nrmse(g.y_true, g.physics, capacity) if has("physics") else np.nan
+        # Elia day-ahead (~6-30 h lead) and week-ahead (~144 h+) bracket our
+        # 24-72 h band. Reporting both is the honest framing: neither alone is
+        # a like-for-like comparator at every lead hour.
         row["nrmse_tso"] = nrmse(g.y_true, g.tso, capacity) if has("tso") else np.nan
+        row["nrmse_tso_wa"] = nrmse(g.y_true, g.tso_wa, capacity) if has("tso_wa") else np.nan
         row["skill_vs_persistence"] = (
             skill_score(g.y_true, g.p50, g.persistence, capacity) if has("persistence") else np.nan
         )
@@ -119,6 +124,10 @@ def summarise(report: pd.DataFrame) -> dict[str, float]:
         return {}
 
     def wmean(col: str) -> float:
+        # An absent optional column is not an error: a report built without a
+        # benchmark should still summarise the columns it does have.
+        if col not in report.columns:
+            return float("nan")
         v = report[col].to_numpy(dtype=float)
         m = np.isfinite(v)
         return float(np.average(v[m], weights=w[m])) if m.any() else float("nan")
@@ -144,6 +153,7 @@ def summarise(report: pd.DataFrame) -> dict[str, float]:
         "nrmse_persistence": persist,
         "nrmse_physics": physics,
         "nrmse_tso": wmean("nrmse_tso"),
+        "nrmse_tso_wa": wmean("nrmse_tso_wa"),
         "skill_mean": agg_skill(persist),
         "skill_vs_physics": agg_skill(physics),
         "mbe_mean": wmean("mbe_model"),

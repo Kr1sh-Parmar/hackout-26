@@ -71,19 +71,44 @@ def fit_shares(
     not the fleet.
     """
     from ..core.config import site_master
+    from .build import _as_indexed
     from .solar import solar_features
     from .wind import wind_features
+
+    if tech != "solar":
+        # There is no clear-sky analogue for wind, so the fit has nothing to
+        # separate ORIENTATION from NWP wind-speed bias and simply votes for the
+        # archetype whose power curve best absorbs that bias -- it returns
+        # onshore 1.0 / offshore 0.0, contradicting the 0.6224/0.3776 measured
+        # directly from Elia's own offshore/onshore capacity split. Measured
+        # beats fitted; refuse rather than quietly return a worse number.
+        raise ValueError(
+            "fit_shares is solar-only: wind shares come from measured capacity in "
+            "silver/generation_actuals_wind_segment, which is strictly better evidence"
+        )
 
     sites: list[SiteMaster] = site_master(cfg, tech)
     kernel = solar_features if tech == "solar" else wind_features
     col = "physics_pac_mw" if tech == "solar" else "physics_power_mw"
 
+    # the physics kernels need a tz-aware DatetimeIndex; build_features does this
+    # for its own callers, and calling a kernel directly must do the same
+    wx = _as_indexed(wx)
     parts = [kernel(wx, s) for s in sites]
     # Unit-share basis: each column is the region at 100% of that archetype.
     basis = np.column_stack(
         [p[col].to_numpy(dtype=float) / s.capacity_share for p, s in zip(parts, sites, strict=True)]
     )
-    y = actual_mw.reindex(wx.index).to_numpy(dtype=float)
+    # Align POSITIONALLY, not by label: `wx` has just been re-indexed to a
+    # DatetimeIndex while `actual_mw` still carries the caller's index, so a
+    # reindex silently yields all-NaN, trips the `mask.sum() < 50` guard and
+    # returns the prior unchanged -- a fit that looks like it ran and did nothing.
+    if len(actual_mw) != len(wx):
+        raise ValueError(
+            f"actual_mw has {len(actual_mw)} rows but weather has {len(wx)}; "
+            "they must be row-aligned"
+        )
+    y = np.asarray(actual_mw, dtype=float)
 
     mask = np.isfinite(y) & np.isfinite(basis).all(axis=1)
     if tech == "solar":

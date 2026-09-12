@@ -28,15 +28,25 @@ nwp_models: [ecmwf_ifs025, icon_seamless, gfs_seamless]
 
 archetypes:
   solar:
-    # [ASSUMED] shares -- refined by fit_shares() on clear-sky days only, which
-    # is what identifies orientation rather than absorbing cloud error
-    - {id: rooftop_south,     tilt: 35, azimuth: 180, share: 0.45,
+    # [FITTED] by fit_shares() on clear-sky daylight hours before 2026, then
+    # validated on held-out 2026+ data: physics-only daylight nRMSE improves
+    # 18.57% -> 14.63% of capacity. Priors were 0.45 / 0.30 / 0.25.
+    #
+    # READ THESE AS A SHAPE CORRECTION, NOT FLEET COMPOSITION. rooftop_south
+    # (35 deg/180) and ground_mount (30 deg/180) are near-collinear basis
+    # vectors, so the fit cannot separate them and collapses one into the other
+    # -- that is why ground_mount lands at 0.00. What IS identified is the
+    # south vs east-west split, which is what sets the shape of the daily curve
+    # (a broad east-west fleet produces the morning shoulder a single-tilt model
+    # underestimates every day of the year). Do not quote these as the real
+    # Belgian rooftop mix.
+    - {id: rooftop_south,     tilt: 35, azimuth: 180, share: 0.3112,
        tracking: fixed, dc_ac_ratio: 1.15, gamma_pdc: -0.0035, albedo: 0.20,
        soiling_pct_per_day: 0.0}
-    - {id: rooftop_east_west, tilt: 20, azimuth:  90, share: 0.30,
+    - {id: rooftop_east_west, tilt: 20, azimuth:  90, share: 0.6888,
        tracking: fixed, dc_ac_ratio: 1.15, gamma_pdc: -0.0035, albedo: 0.20,
        soiling_pct_per_day: 0.0}
-    - {id: ground_mount,      tilt: 30, azimuth: 180, share: 0.25,
+    - {id: ground_mount,      tilt: 30, azimuth: 180, share: 0.0,
        tracking: fixed, dc_ac_ratio: 1.25, gamma_pdc: -0.0035, albedo: 0.20,
        soiling_pct_per_day: 0.0}
   wind:

@@ -26,7 +26,7 @@ from src.evaluation.walk_forward import assert_no_overlap, walk_forward  # noqa:
 from src.features.build import build_all_features  # noqa: E402
 from src.models.physics import physics_forecast  # noqa: E402
 from src.models.residual_gbdt import predict_residual, train_residual  # noqa: E402
-from src.uncertainty.conformal import SplitConformal  # noqa: E402
+from src.uncertainty.conformal import SplitConformal, calibration_mask  # noqa: E402
 
 GOLD = "data/gold/training_base_24_72h/part-0.parquet"
 OUT = pathlib.Path("data/gold/backtest")
@@ -47,11 +47,12 @@ def fold_predictions(cfg, tech, fold, actuals, cap) -> pd.DataFrame:
     if len(fold.calibrate) > 200:
         x_c, phys_c, y_c = prep(fold.calibrate)
         b_c = predict_residual(models, x_c, phys_c, cap)
+        cmask = calibration_mask(fold.calibrate, tech)
         conformal = SplitConformal(alpha=0.2).calibrate(
-            b_c["p10_mw"].to_numpy(dtype=float),
-            b_c["p90_mw"].to_numpy(dtype=float),
-            y_c * cap,
-            fold.calibrate["lead_hours"].to_numpy(dtype=float),
+            b_c["p10_mw"].to_numpy(dtype=float)[cmask],
+            b_c["p90_mw"].to_numpy(dtype=float)[cmask],
+            (y_c * cap)[cmask],
+            fold.calibrate["lead_hours"].to_numpy(dtype=float)[cmask],
         )
 
     te = fold.test
@@ -73,7 +74,8 @@ def fold_predictions(cfg, tech, fold, actuals, cap) -> pd.DataFrame:
             "physics": phys_te * cap,
             "persistence": persistence(te, cf).to_numpy(dtype=float) * cap,
             "climatology": climatology(te, cf).to_numpy(dtype=float) * cap,
-            "tso": te[f"tso_{tech}_p50_mw"].to_numpy(dtype=float),
+            "tso": te[f"tso_{tech}_da_p50_mw"].to_numpy(dtype=float),
+            "tso_wa": te[f"tso_{tech}_wa_p50_mw"].to_numpy(dtype=float),
             "is_day": te["is_day"].to_numpy() if tech == "solar" else 1,
         }
     )
@@ -103,17 +105,19 @@ def run(region: str, tech: str, quick: bool) -> dict:
     metrics = summarise(report)
 
     print(
-        f"  {'lead':>5} {'n':>6} {'model':>7} {'persist':>8} {'physics':>8} {'Elia':>7} {'PICP':>6}"
+        f"  {'lead':>5} {'n':>6} {'model':>7} {'persist':>8} {'physics':>8} "
+        f"{'EliaDA':>7} {'EliaWA':>7} {'PICP':>6}"
     )
     for _, r in report[report.lead_hours.isin([24, 36, 48, 60, 72])].iterrows():
         print(
             f"  {int(r.lead_hours):5d} {int(r.n_rows):6,} {r.nrmse_model * 100:6.2f}% "
             f"{r.nrmse_persistence * 100:7.2f}% {r.nrmse_physics * 100:7.2f}% "
-            f"{r.nrmse_tso * 100:6.2f}% {r.picp_80:6.3f}"
+            f"{r.nrmse_tso * 100:6.2f}% {r.nrmse_tso_wa * 100:6.2f}% {r.picp_80:6.3f}"
         )
     print(
         f"  OVERALL nRMSE {metrics['nrmse_mean'] * 100:.2f}%  "
         f"skill {metrics['skill_mean']:.3f}  PICP {metrics['picp_mean']:.3f}  "
+        f"| Elia DA {metrics['nrmse_tso'] * 100:.2f}% WA {metrics['nrmse_tso_wa'] * 100:.2f}%  "
         f"(daylight_only={daylight})"
     )
 
