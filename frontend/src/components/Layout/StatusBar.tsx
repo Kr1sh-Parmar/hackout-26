@@ -114,12 +114,18 @@ export default function StatusBar() {
 }
 
 function HealthPill({ health }: { health: ReturnType<typeof useHealth> }) {
-  if (health.isError)
+  if (health.isError) {
+    // Unreachable (status 0) and reachable-but-failing are different problems; say which.
+    const status = (health.error as { status?: number } | null)?.status;
     return (
-      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-red-100/80 text-red-700 border border-red-200">
-        <WifiOff className="w-3.5 h-3.5" /> API offline
+      <span
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-red-100/80 text-red-700 border border-red-200"
+        title={health.error instanceof Error ? health.error.message : undefined}
+      >
+        <WifiOff className="w-3.5 h-3.5" /> {status ? `API error ${status}` : 'API offline'}
       </span>
     );
+  }
   if (!health.data) return <span className="inline-block w-24 h-7 rounded-full bg-white/50 animate-pulse" />;
 
   const { status, warnings } = health.data;

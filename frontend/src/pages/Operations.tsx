@@ -102,7 +102,17 @@ export default function Operations() {
             <StatTile
               label="Model health"
               icon={Gauge}
-              value={health.data ? (health.data.status === 'ok' ? 'Healthy' : 'Degraded') : health.isError ? 'Offline' : '…'}
+              value={
+                health.data
+                  ? health.data.status === 'ok'
+                    ? 'Healthy'
+                    : 'Degraded'
+                  : health.isError
+                    ? (health.error as { status?: number } | null)?.status
+                      ? 'API error'
+                      : 'Offline'
+                    : '…'
+              }
               status={health.data ? (health.data.status === 'ok' ? 'good' : 'serious') : health.isError ? 'critical' : undefined}
               sub={health.data ? `${health.data.warnings.length} warning${health.data.warnings.length === 1 ? '' : 's'}` : undefined}
               delay={0.18}

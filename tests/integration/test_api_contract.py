@@ -1,6 +1,11 @@
 """API contract: every endpoint returns 200 with provenance present, unknown
 region returns 404 with a hint, and every endpoint works with no gold tables
-present at all (the model/decisions pipelines haven't run yet)."""
+present at all (the model/decisions pipelines haven't run yet).
+
+The contract itself is checked against the synthetic frozen cycles of the shared
+`replay_api` fixture, so it holds on every machine -- a clean checkout has no
+`data/`, and asserting against the real tree made CI's verdict depend on it.
+"""
 
 from __future__ import annotations
 
@@ -35,8 +40,8 @@ OPERATIONAL = ["/forecast", "/outlook", "/events", "/actions", "/explain"]
 def never_stale(monkeypatch):
     """Pin freshness so the suite does not start failing as the gold data ages.
 
-    Without this, `test_every_endpoint_returns_provenance` passes on the day
-    someone runs a cycle and fails a week later -- ambient state, not behaviour.
+    Without this, a test against real gold passes on the day someone runs a cycle
+    and fails a week later -- ambient state, not behaviour.
     """
     get_settings.cache_clear()
     monkeypatch.setenv("STALE_AFTER_MINUTES", "100000000")
@@ -57,14 +62,14 @@ def test_sites_ok():
     assert isinstance(r.json(), list)
 
 
-def test_every_endpoint_returns_provenance(never_stale):
+def test_every_endpoint_returns_provenance(replay_api):
     """Provenance is non-negotiable on every response, populated or not.
 
     Without model_version / issued_at, "which model produced this number?" is
     unanswerable -- and that is exactly the question asked after a bad forecast.
     """
     for path, params in ENDPOINTS:
-        r = client.get(path, params=params)
+        r = replay_api.get(path, params=params)
         assert r.status_code == 200, f"{path} -> {r.status_code}: {r.text}"
         body = r.json()
         assert PROVENANCE_KEYS.issubset(body), f"{path} missing provenance: {body}"
@@ -78,7 +83,6 @@ def test_endpoints_serve_empty_data_when_no_gold_tables_exist(tmp_path, monkeypa
     real directory made the test pass or fail depending on whether anyone had
     run a forecast cycle, which is ambient state, not behaviour.
     """
-    from src.core.config import get_settings
     from src.core.store import ParquetStore
 
     get_settings.cache_clear()
@@ -138,8 +142,14 @@ def test_replay_mode_never_errors_on_age(tmp_path, monkeypatch):
 
 
 def test_explain_drivers_are_ranked_by_absolute_contribution(never_stale):
-    """An unranked attribution is a 44-row table, not an answer."""
+    """An unranked attribution is a 44-row table, not an answer.
+
+    Checked against REAL gold on purpose: a synthetic single driver is trivially
+    ranked. With no cycle run on this machine there is nothing to check.
+    """
     r = client.get("/explain", params={"region_id": "BE", "tech": "solar"})
+    if r.status_code == 503 and r.json().get("error") == "ForecastUnavailable":
+        pytest.skip("no gold forecast run on this machine; run scripts/run_cycle.py")
     assert r.status_code == 200, r.text
     data = r.json()["data"]
     if not data:
@@ -159,7 +169,7 @@ def test_unknown_region_is_404_with_a_hint():
 
 
 @pytest.mark.parametrize("path,params", ENDPOINTS)
-def test_every_served_response_logs_its_provenance(path, params, never_stale):
+def test_every_served_response_logs_its_provenance(path, params, replay_api):
     """dev-01 12: structured logs carry region_id, run_ts and model_version.
 
     Without model_version in the line, the log tells you a bad forecast was
@@ -169,7 +179,7 @@ def test_every_served_response_logs_its_provenance(path, params, never_stale):
     from structlog.testing import capture_logs
 
     with capture_logs() as entries:
-        assert client.get(path, params=params).status_code == 200
+        assert replay_api.get(path, params=params).status_code == 200
 
     served = [e for e in entries if e.get("event") == "served"]
     assert served, f"{path} served a response without logging it"

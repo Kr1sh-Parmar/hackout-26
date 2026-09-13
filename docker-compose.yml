@@ -13,6 +13,9 @@
 # `ui` is the console: a static build served by nginx, which proxies /api to the
 # api service so the browser talks to one origin. Open http://localhost:8080.
 #
+# Host ports are overridable (API_PORT, UI_PORT) because 8000 and 8080 are exactly
+# the ports a dev machine already has something on -- a local uvicorn, or Apache.
+#
 # The dev file should be corrected to match, per the repo's own rule about
 # design docs and the build disagreeing.
 
@@ -21,7 +24,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
-    ports: ["8000:8000"]
+    ports: ["${API_PORT:-8000}:8000"]
     env_file: .env
     environment:
       # Container-local paths; the host layout is mounted onto them below.
@@ -38,6 +41,6 @@ services:
 
   ui:
     build: ./frontend
-    ports: ["8080:80"]
+    ports: ["${UI_PORT:-8080}:80"]
     depends_on: [api]
     restart: unless-stopped

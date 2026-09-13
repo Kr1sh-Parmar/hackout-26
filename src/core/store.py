@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import glob
 import pathlib
+import threading
 
 import duckdb
 import pandas as pd
@@ -25,6 +26,8 @@ class ParquetStore:
     def __init__(self, root: pathlib.Path):
         self.root = pathlib.Path(root)
         self.con = duckdb.connect(":memory:")
+        # One connection is shared by every request thread (see `_query`).
+        self._lock = threading.Lock()
         # DuckDB renders TIMESTAMPTZ in the SESSION timezone, so on a machine set
         # to IST every timestamp came back as +05:30 -- the same instant, but the
         # API is not the presentation layer and must speak UTC. Pin it here so the
@@ -39,7 +42,13 @@ class ParquetStore:
 
     def _query(self, sql: str, params: list) -> pd.DataFrame:
         try:
-            return self.con.execute(sql, params).fetchdf()
+            # FastAPI runs sync routes in a threadpool, all sharing this store. Overlapping
+            # execute/fetchdf on one DuckDB connection returned None, so every route 500'd
+            # the moment a browser loaded its panels in parallel (live path only -- replay
+            # barely queries). ponytail: serialised reads; they are millisecond parquet
+            # scans. Per-thread cursors (each re-pinning TimeZone) if this ever queues.
+            with self._lock:
+                return self.con.execute(sql, params).fetchdf()
         except duckdb.Error:
             return pd.DataFrame()
 

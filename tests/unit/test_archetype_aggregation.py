@@ -9,11 +9,12 @@ import pytest
 from src.core.config import load_region, site_master
 from src.features.archetype import aggregate_archetypes
 from src.features.build import build_all_features
+from tests.conftest import read_built_parquet
 
 
 @pytest.fixture(scope="module")
 def wx() -> pd.DataFrame:
-    df = pd.read_parquet("data/gold/training_base_24_72h/part-0.parquet")
+    df = read_built_parquet("data/gold/training_base_24_72h/part-0.parquet")
     return df.head(240).reset_index(drop=True)
 
 

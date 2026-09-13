@@ -290,14 +290,14 @@ Every action carries a size, a value, and a stated confidence — the platform's
 
 ## 8. Reproducibility & Testing
 
-- **210 automated tests** covering physics correctness, feature-parity between training and serving, leakage guards, API contracts, run selection, operator acknowledgements, and calibration behaviour
+- **211 automated tests** covering physics correctness, feature-parity between training and serving, leakage guards, API contracts, run selection, operator acknowledgements, concurrent store access, and calibration behaviour. 15 of them read the built dataset (`data/`, gitignored) and skip with a stated reason on a clean checkout — CI included; the API contract runs everywhere against a synthetic replay snapshot
 - **Zero data leakage by construction**: no random train/test splits anywhere in the codebase; every split is chronological with an explicit gap
 - **Deterministic aggregation**: the same regional weather-aggregation function is called by both the historical training pipeline and the live serving path, verified identical to floating-point precision
 - **Replay mode**: a full forecast cycle can be snapshotted and replayed with zero network access, for reliable offline demonstration — every operational endpoint reads through the same switch, verified against an empty data root so the frozen copy is genuinely what gets served
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests/ -q          # 210 tests
+python -m pytest tests/ -q          # 211 tests (196 + 15 skipped without data/)
 python scripts/backtest.py --region BE
 python scripts/run_cycle.py --region BE --live
 uvicorn src.api.main:app --reload   # API at localhost:8000/docs

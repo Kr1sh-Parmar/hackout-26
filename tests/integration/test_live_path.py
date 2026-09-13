@@ -70,8 +70,10 @@ def test_live_frame_never_describes_its_own_past(stubbed):
 
 def test_live_frame_carries_every_column_the_model_needs(stubbed):
     """THE shape contract. If this fails, serving and training have diverged."""
+    from tests.conftest import read_built_parquet
+
     wx = live_weather(stubbed, run_ts=RUN, horizon_hours=72)
-    gold = pd.read_parquet("data/gold/training_base_24_72h/part-0.parquet").head(50)
+    gold = read_built_parquet("data/gold/training_base_24_72h/part-0.parquet").head(50)
     missing = assert_serving_shape(wx, gold)
     assert not missing, f"live frame is missing {missing}"
 

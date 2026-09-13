@@ -16,7 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-cov", "pytest-asyncio", "hypothesis>=6.112",
-       "ruff>=0.7", "mypy>=1.13", "matplotlib>=3.9", "jupyterlab",
+       # ruff is PINNED: its default rule set grows between releases, so an open range made
+       # CI's verdict depend on the day it ran (0.16.7 flagged 128 findings 0.11.0 does not).
+       # Upgrade deliberately, fixing what the new version reports in the same commit.
+       "ruff==0.11.0", "mypy>=1.13", "matplotlib>=3.9", "jupyterlab",
        "optuna>=4.0"]  # scripts/tune.py only; the served model loads pre-tuned params
 # Rungs 6-7 only. Kept out of the core deps so the serving path never imports torch.
 deep = ["torch>=2.6"]

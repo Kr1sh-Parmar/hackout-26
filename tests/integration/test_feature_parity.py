@@ -19,6 +19,7 @@ import pytest
 from src.core.config import load_region, site_master
 from src.features.build import FEATURE_COLUMNS, build_features
 from src.features.lags import LAG_COLUMNS, lag_origin
+from tests.conftest import read_built_parquet
 
 GOLD = "data/gold/training_base_24_72h/part-0.parquet"
 NON_LAG = [c for c in FEATURE_COLUMNS if c not in LAG_COLUMNS and c != "tech"]
@@ -26,18 +27,18 @@ NON_LAG = [c for c in FEATURE_COLUMNS if c not in LAG_COLUMNS and c != "tech"]
 
 @pytest.fixture(scope="module")
 def slice_():
-    df = pd.read_parquet(GOLD)
+    df = read_built_parquet(GOLD)
     return df[df["forecast_vintage"] == "prev_day1"].head(480).reset_index(drop=True)
 
 
 @pytest.fixture(scope="module")
 def actuals():
-    return pd.read_parquet("data/silver/generation_actuals_solar/part-0.parquet")
+    return read_built_parquet("data/silver/generation_actuals_solar/part-0.parquet")
 
 
 @pytest.fixture(scope="module")
 def wind_actuals():
-    return pd.read_parquet("data/silver/generation_actuals_wind/part-0.parquet")
+    return read_built_parquet("data/silver/generation_actuals_wind/part-0.parquet")
 
 
 @pytest.mark.parametrize("tech", ["solar", "wind"])

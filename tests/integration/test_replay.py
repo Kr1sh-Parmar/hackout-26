@@ -12,9 +12,7 @@ import pytest
 
 from src.core.config import get_settings
 from src.ingest.replay import STATIC_TABLES, TABLES, load_replay, read_table, snapshot
-
-REGION = "BE"
-RUN_TS = pd.Timestamp("2026-09-09T00:00:00Z")
+from tests.conftest import REGION, RUN_TS, RUN_TS_OLD
 
 
 def _write_gold(gold_root, table: str, run_ts: pd.Timestamp) -> None:
@@ -22,65 +20,6 @@ def _write_gold(gold_root, table: str, run_ts: pd.Timestamp) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame({"region_id": [REGION], "run_ts_utc": [run_ts], "value": [1.0]})
     df.to_parquet(dest / "part-0.parquet", index=False)
-
-
-def _contract_row(table: str, run_ts: pd.Timestamp) -> dict:
-    """One row carrying every column the API's response model requires.
-
-    Built from the same column constants the producers export, so if a contract
-    grows a field this fixture follows it instead of quietly under-filling.
-    """
-    from src.decisions.events import EVENT_COLUMNS
-    from src.evaluation.drift import DRIFT_COLUMNS
-    from src.decisions.net_load import OUTLOOK_COLUMNS
-    from src.decisions.recommend import Action, Flag, RECOMMEND_COLUMNS
-    from src.models.explain import EXPLAIN_COLUMNS
-    from src.models.predict import PREDICT_COLUMNS
-
-    columns = {
-        "forecast": PREDICT_COLUMNS,
-        "outlook": OUTLOOK_COLUMNS,
-        "events": EVENT_COLUMNS,
-        "actions": RECOMMEND_COLUMNS,
-        "explain": EXPLAIN_COLUMNS,
-        "drift": DRIFT_COLUMNS,
-    }[table]
-
-    row: dict = {"region_id": REGION, "run_ts_utc": run_ts}
-    for col in columns:
-        if col in row:
-            continue
-        if col.endswith(("_ts_utc", "_from", "_to")):
-            row[col] = run_ts
-        elif col == "tech":
-            row[col] = "solar"
-        elif col == "flag":
-            row[col] = list(Flag)[0].value
-        elif col == "action":
-            row[col] = list(Action)[0].value
-        elif col == "rank":
-            row[col] = 0  # top driver; the /explain route filters on rank < top_n
-        elif col in ("lead_hours", "severity", "n_obs"):
-            row[col] = 24
-        elif col == "decisive":
-            row[col] = True
-        elif col in ("event_id", "linked_event_id", "feature"):
-            row[col] = "x"
-        elif col in ("description", "rationale", "model_version", "calibration_date"):
-            row[col] = "x"
-        elif col in ("calibrated", "retrain"):
-            row[col] = True
-        elif col in ("reason", "drifted_features"):
-            row[col] = "x"
-        else:
-            row[col] = 0.0
-    return row
-
-
-def _write_contract_gold(gold_root, table: str, run_ts: pd.Timestamp) -> None:
-    dest = gold_root / table / f"region_id={REGION}" / f"run_date={run_ts:%Y-%m-%d}"
-    dest.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([_contract_row(table, run_ts)]).to_parquet(dest / "part-0.parquet", index=False)
 
 
 def _write_backtest_gold(gold_root) -> None:
@@ -165,7 +104,7 @@ def test_read_table_delegates_to_store_when_replay_mode_off(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_api_serves_the_snapshot_when_gold_is_gone(tmp_path, monkeypatch):
+def test_api_serves_the_snapshot_when_gold_is_gone(replay_api):
     """The integrity claim, end to end: with `data/gold` pointed at an empty
     directory, every operational endpoint still answers from the frozen copy.
 
@@ -174,48 +113,27 @@ def test_api_serves_the_snapshot_when_gold_is_gone(tmp_path, monkeypatch):
     machine that happened to have gold and would have served nothing on one that
     did not. That is exactly the failure this mode exists to prevent.
     """
-    from fastapi.testclient import TestClient
-
-    from src.api import deps
-    from src.api.main import app
-
-    gold_root = tmp_path / "gold"
-    for table in TABLES:
-        _write_contract_gold(gold_root, table, RUN_TS)
-    _write_backtest_gold(gold_root)
-
-    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path / "artifacts"))
-    monkeypatch.setenv("REPLAY_MODE", "true")
-    monkeypatch.setenv("DATA_ROOT", str(tmp_path / "nothing-here"))
-    get_settings.cache_clear()
-    deps.get_store.cache_clear()
-    try:
-        snapshot(REGION, RUN_TS, gold_root=gold_root, settings=get_settings())
-        client = TestClient(app)
-        # /storage/sweep and /backtest are in this list on purpose: they were the
-        # last two routes reading the store directly, so with gold gone they
-        # returned an empty payload -- a demo showing a forecast beside a blank
-        # accuracy panel and a flat sizing curve, with no error to explain it.
-        paths = [
-            ("/forecast", {}),
-            ("/outlook", {}),
-            ("/events", {}),
-            ("/actions", {}),
-            ("/explain", {}),
-            ("/storage/sweep", {}),
-            ("/backtest", {"tech": "solar"}),
-        ]
-        for path, extra in paths:
-            r = client.get(path, params={"region_id": REGION, **extra})
-            assert r.status_code == 200, f"{path} -> {r.status_code}: {r.text}"
-            body = r.json()
-            assert body["replay_mode"] is True, path
-            assert body["data"], f"{path} served nothing from the snapshot"
-            # Provenance must name the snapshot's run, not ambient gold state.
-            assert body["issued_at"].startswith("2026-09-09"), path
-    finally:
-        get_settings.cache_clear()
-        deps.get_store.cache_clear()
+    # /storage/sweep and /backtest are in this list on purpose: they were the
+    # last two routes reading the store directly, so with gold gone they
+    # returned an empty payload -- a demo showing a forecast beside a blank
+    # accuracy panel and a flat sizing curve, with no error to explain it.
+    paths = [
+        ("/forecast", {}),
+        ("/outlook", {}),
+        ("/events", {}),
+        ("/actions", {}),
+        ("/explain", {}),
+        ("/storage/sweep", {}),
+        ("/backtest", {"tech": "solar"}),
+    ]
+    for path, extra in paths:
+        r = replay_api.get(path, params={"region_id": REGION, **extra})
+        assert r.status_code == 200, f"{path} -> {r.status_code}: {r.text}"
+        body = r.json()
+        assert body["replay_mode"] is True, path
+        assert body["data"], f"{path} served nothing from the snapshot"
+        # Provenance must name the snapshot's run, not ambient gold state.
+        assert pd.Timestamp(body["issued_at"]) == RUN_TS, path
 
 
 def test_load_replay_returns_empty_frame_when_nothing_snapshotted(tmp_path, monkeypatch):
@@ -230,55 +148,6 @@ def test_load_replay_returns_empty_frame_when_nothing_snapshotted(tmp_path, monk
 
 
 # --- The features the console depends on: runs, acknowledgements, the headline ---
-
-RUN_TS_OLD = pd.Timestamp("2026-09-08T12:00:00Z")
-
-
-def _write_scored_backtest_gold(gold_root) -> None:
-    """A backtest table with the columns `summarise` weights by, as backtest.py writes it."""
-    dest = gold_root / "backtest"
-    dest.mkdir(parents=True, exist_ok=True)
-    for tech in ("solar", "wind"):
-        pd.DataFrame(
-            {
-                "lead_hours": [48, 24, 36],
-                "n_rows": [300, 100, 0],
-                "nrmse_model": [0.06, 0.05, None],
-                "nrmse_persistence": [0.12, 0.10, None],
-                "picp_80": [0.80, 0.70, None],
-                "region_id": [REGION] * 3,
-                "tech": [tech] * 3,
-                "folds": [22] * 3,
-            }
-        ).to_parquet(dest / f"region_id={REGION}_tech={tech}.parquet", index=False)
-
-
-@pytest.fixture
-def replay_api(tmp_path, monkeypatch):
-    """Two frozen cycles and nothing in gold: the API must serve both, distinctly."""
-    from fastapi.testclient import TestClient
-
-    from src.api import deps
-    from src.api.main import app
-
-    gold_root = tmp_path / "gold"
-    for run in (RUN_TS_OLD, RUN_TS):
-        for table in TABLES:
-            _write_contract_gold(gold_root, table, run)
-    _write_scored_backtest_gold(gold_root)
-
-    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path / "artifacts"))
-    monkeypatch.setenv("DATA_ROOT", str(tmp_path / "data"))
-    monkeypatch.setenv("REPLAY_MODE", "true")
-    get_settings.cache_clear()
-    deps.get_store.cache_clear()
-    try:
-        for run in (RUN_TS_OLD, RUN_TS):
-            snapshot(REGION, run, gold_root=gold_root, settings=get_settings())
-        yield TestClient(app)
-    finally:
-        get_settings.cache_clear()
-        deps.get_store.cache_clear()
 
 
 def test_runs_lists_every_frozen_cycle_newest_first(replay_api):
@@ -326,22 +195,16 @@ def test_acknowledgement_round_trip_is_persisted_server_side(replay_api, tmp_pat
     assert first.status_code == 200, first.text
     acked_at = pd.Timestamp(first.json()["acknowledged_at"])
     # Idempotent: a double click must not move the acknowledgement time.
-    assert (
-        pd.Timestamp(replay_api.post(url, params={"region_id": REGION}).json()["acknowledged_at"])
-        == acked_at
-    )
+    again = replay_api.post(url, params={"region_id": REGION})
+    assert pd.Timestamp(again.json()["acknowledged_at"]) == acked_at
     assert (tmp_path / "data" / "ops" / "acks" / f"{REGION}.json").exists()
 
     served = replay_api.get("/actions", params={"region_id": REGION}).json()["data"][0]
     assert pd.Timestamp(served["acknowledged_at"]) == acked_at
 
     assert replay_api.delete(url, params={"region_id": REGION}).json()["acknowledged_at"] is None
-    assert (
-        replay_api.get("/actions", params={"region_id": REGION}).json()["data"][0][
-            "acknowledged_at"
-        ]
-        is None
-    )
+    after = replay_api.get("/actions", params={"region_id": REGION}).json()["data"][0]
+    assert after["acknowledged_at"] is None
 
 
 def test_acknowledgements_are_scoped_to_their_run(replay_api):
